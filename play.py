@@ -33,7 +33,7 @@ Install:
     pip install claude-games
 """
 
-__version__ = '2.4.0'
+__version__ = '2.4.1'
 
 import curses
 import json
@@ -1171,6 +1171,11 @@ class BreakoutGame(Game):
             self.ball_dx = (hit - 0.5) * 2.0
             if abs(self.ball_dx) < 0.4:
                 self.ball_dx = 0.4 if self.ball_dx >= 0 else -0.4
+            # Cap ball speed
+            spd = (self.ball_dx ** 2 + self.ball_dy ** 2) ** 0.5
+            if spd > 2.0:
+                self.ball_dx *= 2.0 / spd
+                self.ball_dy *= 2.0 / spd
             ny = float(self.paddle_y - 1)
         if ny >= self.area_h - 2:
             self.lives -= 1
@@ -1303,7 +1308,7 @@ class ShooterGame(Game):
         if key == curses.KEY_LEFT or key == ord('a'):
             self.player_x = max(2, self.player_x - speed)
         elif key == curses.KEY_RIGHT or key == ord('d'):
-            self.player_x = min(self.w - 3, self.player_x + speed)
+            self.player_x = min(self.w - 2, self.player_x + speed)
         elif key == ord(' '):
             self._fire()
 
@@ -1825,7 +1830,7 @@ class FlappyGame(Game):
 
     def update(self):
         self.frame += 1
-        self.speed = 1.0 + self.score * 0.04
+        self.speed = min(3.0, 1.0 + self.score * 0.04)
 
         self.bird_vel += self.GRAVITY
         self.bird_y += self.bird_vel
@@ -1837,8 +1842,8 @@ class FlappyGame(Game):
 
         self.pipe_timer -= 1
         if self.pipe_timer <= 0:
-            play_h = self.h - 3
-            gap_start = random.randint(3, play_h - self.PIPE_GAP - 2)
+            max_gap = max(4, ground_y - self.PIPE_GAP - 2)
+            gap_start = random.randint(2, max_gap)
             self.pipes.append({'x': float(self.w - 1), 'gap_top': gap_start,
                                'scored': False})
             self.pipe_timer = max(20, int(self.PIPE_INTERVAL / self.speed))
@@ -2100,7 +2105,7 @@ class PacManGame(Game):
         "#......##....#....##......#",
         "######.#####   #####.######",
         "     #.#           #.#     ",
-        "######.# ###-### #.######  ",
+        "######.# ####-#### #.######",
         "      .  #       #  .      ",
         "######.# ######### #.######",
         "     #.#           #.#     ",
@@ -2225,7 +2230,7 @@ class PacManGame(Game):
                 if d == reverse:
                     continue
                 ny, nx = gy + d[0], self._wrap_x(gx + d[1])
-                if not self._is_wall(ny, nx) and not self._is_ghost_door(ny, nx):
+                if not self._is_wall(ny, nx):
                     ghost['dir'] = d
                     ghost['y'], ghost['x'] = ny, nx
                     return
@@ -2266,8 +2271,6 @@ class PacManGame(Game):
                 continue
             ny, nx = gy + d[0], self._wrap_x(gx + d[1])
             if self._is_wall(ny, nx):
-                continue
-            if not ghost['eaten'] and self._is_ghost_door(ny, nx):
                 continue
             dist = abs(ny - ty) + abs(nx - tx)
             if dist < best_dist:
@@ -2343,8 +2346,7 @@ class PacManGame(Game):
             return
 
         if self.frightened:
-            if moved:
-                self.frightened_timer -= 1
+            self.frightened_timer -= 1
             if self.frightened_timer <= 0:
                 self.frightened = False
 
