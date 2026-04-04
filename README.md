@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  5 classic games in your terminal. Zero dependencies. Just <code>play</code>.
+  7 classic games in your terminal. Zero dependencies. Just <code>play</code>.
 </p>
 
 ---
@@ -43,6 +43,8 @@ pip install .
 | **2048** | `play 2048` | Slide and merge tiles to reach 2048 |
 | **Dino Runner** | `play dino` | Jump over cacti, survive as long as you can |
 | **Breakout** | `play breakout` | Smash bricks with a bouncing ball |
+| **Space Shooter** | `play shooter` | Blast enemies, defeat bosses |
+| **Pong** | `play pong` | Classic paddle game vs AI |
 
 ## Quick Start
 
@@ -57,10 +59,11 @@ play list         # See all games + high scores
 
 ```
  WASD / Arrow Keys   Move / Navigate
- Space               Jump (Dino) / Hard Drop (Tetris) / Launch Ball (Breakout)
+ Space               Jump (Dino) / Hard Drop (Tetris) / Launch (Breakout) / Fire (Shooter) / Serve (Pong)
  W                   Rotate (Tetris)
  P                   Pause
  ESC / Q             Quit (auto-saves progress)
+ ?/H                 Show controls help
  R                   Retry after game over
 ```
 
@@ -70,6 +73,8 @@ play list         # See all games + high scores
 - **High scores** — Tracked per game, shown in menu
 - **Zero dependencies** — Pure Python, just curses (built-in)
 - **Single file** — Entire codebase is one `play.py`
+- **Difficulty selection** — Choose Easy/Medium/Hard for Shooter and Pong
+- **In-game help** — Press `?` during any game to see controls
 - **Adaptive difficulty** — Snake speeds up as you score, Tetris levels up
 - **Ghost piece** — Tetris shows where your piece will land
 - **Works everywhere** — Linux, macOS, WSL2
@@ -103,7 +108,9 @@ play.py (single file)
 │   ├── Tetris
 │   ├── 2048
 │   ├── Dino Runner
-│   └── Breakout
+│   ├── Breakout
+│   ├── Space Shooter
+│   └── Pong
 ├── CLI Games (turn-based)         # Text output, no curses needed
 │   ├── Snake
 │   ├── 2048

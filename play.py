@@ -8,6 +8,8 @@ Usage:
     play 2048         Play 2048 interactively
     play dino         Play Dino Runner interactively
     play breakout     Play Breakout interactively
+    play shooter      Play Space Shooter interactively
+    play pong         Play Pong interactively
 
     play cli                  Show in-conversation game menu
     play cli start snake      Start Snake (turn-based)
@@ -26,7 +28,7 @@ Install:
     pip install claude-games
 """
 
-__version__ = '2.2.0'
+__version__ = '2.3.0'
 
 import curses
 import json
@@ -153,6 +155,7 @@ class Game:
     name = "game"
     min_h = 20
     min_w = 40
+    supports_difficulty = False
 
     def __init__(self, stdscr):
         self.stdscr = stdscr
@@ -160,6 +163,8 @@ class Game:
         self.paused = False
         self.game_over = False
         self.won = False
+        self._show_help = False
+        self.difficulty = 'medium'
         self.h, self.w = stdscr.getmaxyx()
 
     def safe_addstr(self, y, x, text, attr=0):
@@ -196,6 +201,64 @@ class Game:
 
     def draw(self):
         pass
+
+    def get_controls(self):
+        """Override to return list of (key, description) tuples for help overlay."""
+        return []
+
+    def get_stats(self):
+        """Override to return list of (label, value) strings for game over screen."""
+        return []
+
+    def _draw_help_overlay(self):
+        controls = self.get_controls()
+        if not controls:
+            return
+        box_w = max(len(k) + len(d) + 6 for k, d in controls) + 4
+        box_w = max(box_w, 20)
+        box_h = len(controls) + 4
+        sy = max(0, (self.h - box_h) // 2)
+        sx = max(0, (self.w - box_w) // 2)
+        for i in range(box_h):
+            self.safe_addstr(sy + i, sx, ' ' * box_w)
+        self.draw_box(sy, sx, box_h, box_w, curses.A_BOLD)
+        self.center_text(sy, ' CONTROLS ', curses.A_BOLD | curses.A_REVERSE)
+        for i, (key, desc) in enumerate(controls):
+            self.safe_addstr(sy + 2 + i, sx + 2, f'{key:<8} {desc}')
+        self.center_text(sy + box_h - 1, ' ? to close ', curses.color_pair(4))
+
+    @staticmethod
+    def _select_difficulty(stdscr):
+        options = ['Easy', 'Medium', 'Hard']
+        sel = 1
+        while True:
+            h, w = stdscr.getmaxyx()
+            stdscr.erase()
+            mid_y = h // 2
+            _safe(stdscr, mid_y - 3, max(0, (w - 20) // 2),
+                  'SELECT DIFFICULTY', curses.A_BOLD)
+            for i, opt in enumerate(options):
+                y = mid_y - 1 + i
+                if i == sel:
+                    _safe(stdscr, y, max(0, (w - 14) // 2),
+                          f'  > {opt} <  ',
+                          curses.A_BOLD | curses.A_REVERSE)
+                else:
+                    _safe(stdscr, y, max(0, (w - 14) // 2),
+                          f'    {opt}    ')
+            _safe(stdscr, mid_y + 3, max(0, (w - 26) // 2),
+                  'Up/Down: Select  Enter: OK', curses.color_pair(4))
+            stdscr.noutrefresh()
+            curses.doupdate()
+            key = stdscr.getch()
+            if key in (curses.KEY_UP, ord('w'), ord('k')):
+                sel = (sel - 1) % 3
+            elif key in (curses.KEY_DOWN, ord('s'), ord('j')):
+                sel = (sel + 1) % 3
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return options[sel].lower()
+            elif key in (27, ord('q')):
+                return 'medium'
 
     def get_timeout(self):
         return 100
@@ -263,6 +326,15 @@ class Game:
                 continue
             if self.paused:
                 continue
+            if key == ord('?') or key == ord('H'):
+                self._show_help = not self._show_help
+                if self._show_help:
+                    self._draw_help_overlay()
+                    self.stdscr.noutrefresh()
+                    curses.doupdate()
+                continue
+            if self._show_help:
+                self._show_help = False
             if not self.game_over:
                 self.handle_input(key)
                 self.update()
@@ -291,21 +363,26 @@ class Game:
     def _game_over_screen(self):
         mid = self.h // 2
         if self.won:
-            self.center_text(mid - 2, '  YOU WIN!  ',
+            self.center_text(mid - 3, '  YOU WIN!  ',
                              curses.color_pair(1) | curses.A_BOLD)
         else:
-            self.center_text(mid - 2, '  GAME OVER  ',
+            self.center_text(mid - 3, '  GAME OVER  ',
                              curses.color_pair(2) | curses.A_BOLD)
-        self.center_text(mid, f'  Score: {self.score}  ', curses.A_BOLD)
+        self.center_text(mid - 1, f'  Score: {self.score}  ', curses.A_BOLD)
         high = load_high_score(self.name)
         if self.score > high:
             save_high_score(self.name, self.score)
-            self.center_text(mid + 1, '  NEW HIGH SCORE!  ',
-                             curses.color_pair(3) | curses.A_BOLD)
+            self.center_text(mid, '  NEW HIGH SCORE!  ',
+                             curses.A_REVERSE | curses.A_BOLD)
         else:
-            self.center_text(mid + 1, f'  High Score: {high}  ',
+            self.center_text(mid, f'  High Score: {high}  ',
                              curses.color_pair(3))
-        self.center_text(mid + 3, '  [R] Retry   [Q] Quit  ',
+        stats = self.get_stats()
+        for i, (label, value) in enumerate(stats):
+            self.center_text(mid + 2 + i, f'  {label}: {value}  ',
+                             curses.color_pair(4))
+        bottom = mid + 2 + len(stats) + 1
+        self.center_text(bottom, '  [R] Retry   [Q] Quit  ',
                          curses.color_pair(4))
         self.stdscr.noutrefresh()
         curses.doupdate()
@@ -412,8 +489,14 @@ class SnakeGame(Game):
             self.safe_addstr(by + sy, bx + sx, ch,
                              curses.color_pair(1) | curses.A_BOLD)
         self.safe_addstr(by + self.board_h, bx,
-                         ' WASD:Move  P:Pause  ESC:Quit ',
+                         ' WASD:Move  P:Pause  ?:Help  ESC:Quit ',
                          curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD', 'Move'), ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('Length', len(self.snake))]
 
 
 # ─── Tetris ──────────────────────────────────────────────────────────────────
@@ -605,6 +688,14 @@ class TetrisGame(Game):
         self.safe_addstr(sy + 15, px, ' P  Pause')
         self.safe_addstr(sy + 16, px, 'ESC Quit')
 
+    def get_controls(self):
+        return [('A/D', 'Move left/right'), ('W', 'Rotate'),
+                ('S', 'Soft drop'), ('Space', 'Hard drop'),
+                ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('Lines', self.lines), ('Level', self.level)]
+
 
 # ─── 2048 ────────────────────────────────────────────────────────────────────
 
@@ -761,8 +852,16 @@ class Game2048(Game):
         if self.won:
             self.center_text(sy + gh + 1, '  You reached 2048! Keep going!  ',
                              curses.color_pair(3) | curses.A_BOLD)
-        self.safe_addstr(sy + gh + 2, sx, ' WASD:Move  ESC:Quit ',
+        self.safe_addstr(sy + gh + 2, sx, ' WASD:Move  ?:Help  ESC:Quit ',
                          curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD', 'Slide tiles'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        max_tile = max(self.grid[r][c] for r in range(self.SIZE)
+                       for c in range(self.SIZE))
+        return [('Best Tile', max_tile)]
 
 
 # ─── Dino Runner ─────────────────────────────────────────────────────────────
@@ -783,6 +882,20 @@ class DinoGame(Game):
         return self.h - 5
 
     def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.dino_x = 8
+            self.dino_y = saved['dino_y']
+            self.velocity = saved['velocity']
+            self.on_ground = saved['on_ground']
+            self.gravity = 0.5
+            self.jump_power = -2.0
+            self.obstacles = saved['obstacles']
+            self.speed = saved['speed']
+            self.score = saved['score']
+            self.frame = saved['frame']
+            self.spawn_timer = saved['spawn_timer']
+            return
         self.dino_x = 8
         self.dino_y = 0.0
         self.velocity = 0.0
@@ -794,6 +907,12 @@ class DinoGame(Game):
         self.score = 0
         self.frame = 0
         self.spawn_timer = 30
+
+    def get_save_data(self):
+        return {'score': self.score, 'speed': self.speed, 'frame': self.frame,
+                'dino_y': self.dino_y, 'velocity': self.velocity,
+                'on_ground': self.on_ground, 'spawn_timer': self.spawn_timer,
+                'obstacles': self.obstacles}
 
     def get_timeout(self):
         return 40
@@ -878,8 +997,14 @@ class DinoGame(Game):
         for x in range(off, self.w - 1, 6):
             self.safe_addstr(gy + 2, x, '.', curses.color_pair(4))
         self.safe_addstr(self.h - 1, 2,
-                         'W/Space: Jump   P: Pause   ESC: Quit',
+                         'W/Space: Jump  P: Pause  ?: Help  ESC: Quit',
                          curses.color_pair(4))
+
+    def get_controls(self):
+        return [('W/Space', 'Jump'), ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('Speed', f'{self.speed:.1f}x')]
 
 
 # ─── Breakout ────────────────────────────────────────────────────────────────
@@ -890,6 +1015,31 @@ class BreakoutGame(Game):
     min_w = 44
 
     def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.area_w = saved['area_w']
+            self.area_h = saved['area_h']
+            self.area_x = (self.w - self.area_w) // 2
+            self.area_y = (self.h - self.area_h) // 2
+            self.paddle_w = saved['paddle_w']
+            self.paddle_y = self.area_h - 3
+            self.paddle_x = saved['paddle_x']
+            self.ball_x = saved['ball_x']
+            self.ball_y = saved['ball_y']
+            self.ball_dx = saved['ball_dx']
+            self.ball_dy = saved['ball_dy']
+            self.ball_moving = saved['ball_moving']
+            self.brick_w = saved['brick_w']
+            self.brick_rows = saved['brick_rows']
+            self.brick_start_y = saved['brick_start_y']
+            self.bricks_per_row = saved['bricks_per_row']
+            self.brick_off_x = saved['brick_off_x']
+            self.bricks = {(int(k.split(',')[0]), int(k.split(',')[1])): v
+                           for k, v in saved['bricks'].items()}
+            self.score = saved['score']
+            self.lives = saved['lives']
+            return
+
         self.area_w = min(52, self.w - 4)
         self.area_h = min(28, self.h - 4)
         self.area_x = (self.w - self.area_w) // 2
@@ -918,6 +1068,18 @@ class BreakoutGame(Game):
                        for c in range(self.bricks_per_row)}
         self.score = 0
         self.lives = 3
+
+    def get_save_data(self):
+        bricks = {f'{r},{c}': v for (r, c), v in self.bricks.items()}
+        return {'score': self.score, 'lives': self.lives,
+                'paddle_x': self.paddle_x, 'paddle_w': self.paddle_w,
+                'ball_x': self.ball_x, 'ball_y': self.ball_y,
+                'ball_dx': self.ball_dx, 'ball_dy': self.ball_dy,
+                'ball_moving': self.ball_moving,
+                'area_w': self.area_w, 'area_h': self.area_h,
+                'brick_rows': self.brick_rows, 'bricks_per_row': self.bricks_per_row,
+                'brick_off_x': self.brick_off_x, 'brick_w': self.brick_w,
+                'brick_start_y': self.brick_start_y, 'bricks': bricks}
 
     def get_timeout(self):
         return 60
@@ -1008,18 +1170,584 @@ class BreakoutGame(Game):
                              ' Press SPACE to launch ball ',
                              curses.color_pair(4) | curses.A_REVERSE)
         self.safe_addstr(ay + self.area_h, ax,
-                         ' A/D:Move  Space:Launch  P:Pause  ESC:Quit ',
+                         ' A/D:Move  Space:Launch  ?:Help  ESC:Quit ',
+                         curses.color_pair(4))
+
+    def get_controls(self):
+        return [('A/D', 'Move paddle'), ('Space', 'Launch ball'),
+                ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        total = self.brick_rows * self.bricks_per_row
+        broken = total - len(self.bricks)
+        return [('Bricks', f'{broken}/{total}'), ('Lives left', self.lives)]
+
+
+# ─── Space Shooter ──────────────────────────────────────────────────────────
+
+class ShooterGame(Game):
+    name = "shooter"
+    min_h = 20
+    min_w = 40
+    supports_difficulty = True
+
+    _ENEMY_ART = {'basic': '<V>', 'zigzag': '<W>', 'diver': '<X>', 'tank': '[=]'}
+    _BOSS_ART = [' [===] ', '/|||||\\', ' \\___/ ']
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            for k, v in saved.items():
+                setattr(self, k, v)
+            return
+        diff = self.difficulty
+        self.lives = {'easy': 5, 'medium': 3, 'hard': 2}[diff]
+        self.enemy_speed = {'easy': 0.5, 'medium': 0.8, 'hard': 1.2}[diff]
+        self.spawn_rate = {'easy': 25, 'medium': 18, 'hard': 12}[diff]
+        self.boss_fire_rate = {'easy': 20, 'medium': 12, 'hard': 7}[diff]
+        self.player_x = self.w // 2
+        self.score = 0
+        self.wave = 1
+        self.kills = 0
+        self.kills_needed = 10
+        self.frame = 0
+        self.spawn_timer = 20
+        self.bullets = []
+        self.enemy_bullets = []
+        self.enemies = []
+        self.particles = []
+        self.powerups = []
+        self.spread = 0
+        self.shield = False
+        self.speed_boost = 0
+        self.boss = None
+        self.wave_msg_timer = 0
+
+    def get_timeout(self):
+        return 50
+
+    def get_controls(self):
+        return [('A/D', 'Move ship'), ('Space', 'Fire'),
+                ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('Wave', self.wave), ('Kills', self.kills)]
+
+    def get_save_data(self):
+        return {
+            'difficulty': self.difficulty,
+            'lives': self.lives, 'enemy_speed': self.enemy_speed,
+            'spawn_rate': self.spawn_rate, 'boss_fire_rate': self.boss_fire_rate,
+            'player_x': self.player_x, 'score': self.score,
+            'wave': self.wave, 'kills': self.kills,
+            'kills_needed': self.kills_needed, 'frame': self.frame,
+            'spawn_timer': self.spawn_timer,
+            'bullets': self.bullets, 'enemy_bullets': self.enemy_bullets,
+            'enemies': self.enemies, 'particles': self.particles,
+            'powerups': self.powerups,
+            'spread': self.spread, 'shield': self.shield,
+            'speed_boost': self.speed_boost, 'boss': self.boss,
+            'wave_msg_timer': self.wave_msg_timer,
+        }
+
+    def handle_input(self, key):
+        speed = 3 if self.speed_boost > 0 else 2
+        if key == curses.KEY_LEFT or key == ord('a'):
+            self.player_x = max(2, self.player_x - speed)
+        elif key == curses.KEY_RIGHT or key == ord('d'):
+            self.player_x = min(self.w - 3, self.player_x + speed)
+        elif key == ord(' '):
+            self._fire()
+
+    def _fire(self):
+        by = self.h - 4
+        self.bullets.append({'x': self.player_x, 'y': by})
+        if self.spread > 0:
+            self.bullets.append({'x': self.player_x - 2, 'y': by + 1})
+            self.bullets.append({'x': self.player_x + 2, 'y': by + 1})
+
+    def _spawn_enemy(self):
+        if self.boss:
+            return
+        types = ['basic'] * 50 + ['zigzag'] * 25 + ['diver'] * 15 + ['tank'] * 10
+        etype = random.choice(types)
+        hp = 3 if etype == 'tank' else 1
+        x = random.randint(3, self.w - 6)
+        self.enemies.append({
+            'x': x, 'base_x': x, 'y': 2,
+            'type': etype, 'hp': hp, 'frame': 0,
+        })
+
+    def _spawn_boss(self):
+        self.boss = {
+            'x': self.w // 2 - 3, 'y': 2,
+            'hp': 10 + self.wave * 5,
+            'max_hp': 10 + self.wave * 5,
+            'fire_timer': self.boss_fire_rate, 'dir': 1,
+        }
+
+    def _add_particles(self, x, y, count=3):
+        for _ in range(count):
+            self.particles.append({
+                'x': x + random.randint(-1, 1),
+                'y': y + random.randint(-1, 1),
+                'ch': random.choice(['*', '+', '.']),
+                'ttl': random.randint(2, 5),
+            })
+
+    def update(self):
+        self.frame += 1
+        if self.speed_boost > 0:
+            self.speed_boost -= 1
+        if self.spread > 0:
+            self.spread -= 1
+        if self.wave_msg_timer > 0:
+            self.wave_msg_timer -= 1
+
+        # Move bullets
+        self.bullets = [{'x': b['x'], 'y': b['y'] - 1}
+                        for b in self.bullets if b['y'] > 0]
+        self.enemy_bullets = [{'x': b['x'], 'y': b['y'] + 1}
+                              for b in self.enemy_bullets if b['y'] < self.h]
+
+        # Move enemies
+        for e in self.enemies:
+            e['frame'] += 1
+            if e['type'] == 'basic':
+                e['y'] += self.enemy_speed
+            elif e['type'] == 'zigzag':
+                e['y'] += self.enemy_speed
+                offset = abs((e['frame'] % 20) - 10) - 5
+                e['x'] = e['base_x'] + offset
+                e['x'] = max(1, min(self.w - 4, e['x']))
+            elif e['type'] == 'diver':
+                e['y'] += self.enemy_speed * 1.5
+                if e['x'] < self.player_x:
+                    e['x'] += 1
+                elif e['x'] > self.player_x:
+                    e['x'] -= 1
+            elif e['type'] == 'tank':
+                e['y'] += self.enemy_speed * 0.6
+        self.enemies = [e for e in self.enemies if e['y'] < self.h - 2]
+
+        # Boss movement and shooting
+        if self.boss:
+            b = self.boss
+            b['x'] += b['dir']
+            if b['x'] <= 1:
+                b['dir'] = 1
+            elif b['x'] >= self.w - 8:
+                b['dir'] = -1
+            b['fire_timer'] -= 1
+            if b['fire_timer'] <= 0:
+                b['fire_timer'] = self.boss_fire_rate
+                self.enemy_bullets.append({'x': b['x'] + 3, 'y': b['y'] + 3})
+
+        # Player bullets hit enemies/boss
+        new_bullets = []
+        for b in self.bullets:
+            hit = False
+            if self.boss:
+                bx, by = self.boss['x'], self.boss['y']
+                if by <= b['y'] <= by + 2 and bx <= b['x'] <= bx + 6:
+                    self.boss['hp'] -= 1
+                    self._add_particles(b['x'], b['y'])
+                    if self.boss['hp'] <= 0:
+                        self._add_particles(bx + 3, by + 1, 8)
+                        self.score += 500
+                        self.boss = None
+                        self.wave += 1
+                        self.kills = 0
+                        self.kills_needed = 10 + self.wave * 2
+                        self.wave_msg_timer = 30
+                    hit = True
+            if not hit:
+                for e in self.enemies:
+                    art_w = len(self._ENEMY_ART[e['type']])
+                    if (abs(b['y'] - int(e['y'])) <= 1 and
+                            e['x'] <= b['x'] <= e['x'] + art_w - 1):
+                        e['hp'] -= 1
+                        if e['hp'] <= 0:
+                            self._add_particles(e['x'] + art_w // 2, int(e['y']))
+                            self.kills += 1
+                            pts = {'basic': 10, 'zigzag': 20,
+                                   'diver': 25, 'tank': 50}
+                            self.score += pts.get(e['type'], 10)
+                            if random.random() < 0.1:
+                                ptype = random.choice(['S', 'O', '>'])
+                                self.powerups.append({
+                                    'x': e['x'], 'y': int(e['y']),
+                                    'type': ptype,
+                                })
+                        hit = True
+                        break
+            if not hit:
+                new_bullets.append(b)
+        self.bullets = new_bullets
+        self.enemies = [e for e in self.enemies if e['hp'] > 0]
+
+        # Enemy bullets hit player
+        px, py = self.player_x, self.h - 3
+        new_eb = []
+        for b in self.enemy_bullets:
+            if abs(b['x'] - px) <= 1 and abs(b['y'] - py) <= 1:
+                if self.shield:
+                    self.shield = False
+                else:
+                    self.lives -= 1
+                    self._add_particles(px, py, 5)
+                    if self.lives <= 0:
+                        self.game_over = True
+                        return
+            else:
+                new_eb.append(b)
+        self.enemy_bullets = new_eb
+
+        # Enemies collide with player
+        for e in self.enemies:
+            art_w = len(self._ENEMY_ART[e['type']])
+            if (int(e['y']) >= self.h - 4 and
+                    abs(e['x'] + art_w // 2 - px) <= 2):
+                if self.shield:
+                    self.shield = False
+                else:
+                    self.lives -= 1
+                    self._add_particles(px, py, 5)
+                    if self.lives <= 0:
+                        self.game_over = True
+                        return
+                e['hp'] = 0
+        self.enemies = [e for e in self.enemies if e['hp'] > 0]
+
+        # Move and collect power-ups
+        if self.frame % 2 == 0:
+            for p in self.powerups:
+                p['y'] += 1
+        new_pups = []
+        for p in self.powerups:
+            if p['y'] >= self.h:
+                continue
+            if abs(p['x'] - px) <= 2 and abs(p['y'] - py) <= 1:
+                if p['type'] == 'S':
+                    self.spread = 200
+                elif p['type'] == 'O':
+                    self.shield = True
+                elif p['type'] == '>':
+                    self.speed_boost = 200
+            else:
+                new_pups.append(p)
+        self.powerups = new_pups
+
+        # Particles decay
+        self.particles = [{'x': p['x'], 'y': p['y'], 'ch': p['ch'],
+                          'ttl': p['ttl'] - 1}
+                         for p in self.particles if p['ttl'] > 1]
+
+        # Spawn enemies
+        self.spawn_timer -= 1
+        if self.spawn_timer <= 0 and not self.boss:
+            self._spawn_enemy()
+            self.spawn_timer = self.spawn_rate
+
+        # Wave progression
+        if not self.boss and self.kills >= self.kills_needed:
+            self.wave += 1
+            self.kills = 0
+            self.kills_needed = 10 + self.wave * 2
+            self.wave_msg_timer = 30
+            if self.wave % 5 == 0:
+                self._spawn_boss()
+
+    def draw(self):
+        # Header
+        self.safe_addstr(0, 2, 'SPACE SHOOTER', curses.A_BOLD)
+        info = f'Score:{self.score}  Wave:{self.wave}  '
+        self.safe_addstr(0, 17, info,
+                         curses.color_pair(3) | curses.A_BOLD)
+        lives_s = '*' * self.lives
+        self.safe_addstr(0, self.w - self.lives - 2, lives_s,
+                         curses.color_pair(2) | curses.A_BOLD)
+
+        # Wave announcement
+        if self.wave_msg_timer > 0:
+            self.center_text(self.h // 3, f'  WAVE {self.wave}  ',
+                             curses.A_BOLD | curses.A_REVERSE)
+
+        # Enemies
+        for e in self.enemies:
+            art = self._ENEMY_ART[e['type']]
+            color = {'basic': 2, 'zigzag': 5, 'diver': 3, 'tank': 6}
+            self.safe_addstr(int(e['y']), int(e['x']), art,
+                             curses.color_pair(color.get(e['type'], 7))
+                             | curses.A_BOLD)
+
+        # Boss
+        if self.boss:
+            bx, by = self.boss['x'], self.boss['y']
+            for i, line in enumerate(self._BOSS_ART):
+                self.safe_addstr(by + i, bx, line,
+                                 curses.color_pair(2) | curses.A_BOLD)
+            hp_w = min(20, self.w - 10)
+            filled = max(0, int(hp_w * self.boss['hp'] / self.boss['max_hp']))
+            bar = '#' * filled + '-' * (hp_w - filled)
+            self.center_text(by + 4, f'[{bar}]', curses.color_pair(2))
+
+        # Bullets
+        for b in self.bullets:
+            self.safe_addstr(b['y'], b['x'], '|',
+                             curses.color_pair(3) | curses.A_BOLD)
+        for b in self.enemy_bullets:
+            self.safe_addstr(b['y'], b['x'], '.',
+                             curses.color_pair(2) | curses.A_BOLD)
+
+        # Power-ups
+        for p in self.powerups:
+            self.safe_addstr(p['y'], p['x'], p['type'],
+                             curses.color_pair(1) | curses.A_BOLD
+                             | curses.A_REVERSE)
+
+        # Particles
+        for p in self.particles:
+            self.safe_addstr(p['y'], p['x'], p['ch'],
+                             curses.color_pair(3))
+
+        # Player ship
+        self.safe_addstr(self.h - 3, self.player_x - 1, '/A\\',
+                         curses.color_pair(1) | curses.A_BOLD)
+        if self.shield:
+            self.safe_addstr(self.h - 2, self.player_x - 2, '(===)',
+                             curses.color_pair(4) | curses.A_BOLD)
+
+        # Status bar
+        parts = []
+        if self.spread > 0:
+            parts.append('SPREAD')
+        if self.shield:
+            parts.append('SHIELD')
+        if self.speed_boost > 0:
+            parts.append('SPEED')
+        if parts:
+            self.safe_addstr(self.h - 1, 2, ' '.join(parts),
+                             curses.color_pair(1) | curses.A_BOLD)
+        self.safe_addstr(self.h - 1, self.w - 28,
+                         'A/D:Move Space:Fire ?:Help',
+                         curses.color_pair(4))
+
+
+# ─── Pong ───────────────────────────────────────────────────────────────────
+
+class PongGame(Game):
+    name = "pong"
+    min_h = 18
+    min_w = 40
+    supports_difficulty = True
+
+    PADDLE_H = 5
+    WIN_SCORE = 11
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            for k, v in saved.items():
+                setattr(self, k, v)
+            return
+        diff = self.difficulty
+        self.ai_speed = {'easy': 0.5, 'medium': 0.8, 'hard': 1.0}[diff]
+        self.ai_error = {'easy': 3.0, 'medium': 1.5, 'hard': 0.5}[diff]
+        self.ai_react = {'easy': 8, 'medium': 4, 'hard': 2}[diff]
+        self.player_y = self.h // 2 - self.PADDLE_H // 2
+        self.ai_y = self.h // 2 - self.PADDLE_H // 2
+        self.ai_target = float(self.h // 2)
+        self.player_score = 0
+        self.ai_score = 0
+        self.score = 0
+        self.ball_x = float(self.w // 2)
+        self.ball_y = float(self.h // 2)
+        self.ball_dx = 0.0
+        self.ball_dy = 0.0
+        self.serving = True
+        self.server = 'player'
+        self.rally = 0
+        self.frame = 0
+
+    def get_timeout(self):
+        return 40
+
+    def get_controls(self):
+        return [('W/S', 'Move paddle'), ('Space', 'Serve'),
+                ('P', 'Pause'), ('ESC', 'Quit')]
+
+    def get_stats(self):
+        return [('You', self.player_score), ('AI', self.ai_score)]
+
+    def get_save_data(self):
+        return {
+            'difficulty': self.difficulty,
+            'ai_speed': self.ai_speed, 'ai_error': self.ai_error,
+            'ai_react': self.ai_react,
+            'player_y': self.player_y, 'ai_y': self.ai_y,
+            'ai_target': self.ai_target,
+            'player_score': self.player_score, 'ai_score': self.ai_score,
+            'score': self.score,
+            'ball_x': self.ball_x, 'ball_y': self.ball_y,
+            'ball_dx': self.ball_dx, 'ball_dy': self.ball_dy,
+            'serving': self.serving, 'server': self.server,
+            'rally': self.rally, 'frame': self.frame,
+        }
+
+    def _serve(self):
+        self.ball_x = float(self.w // 2)
+        self.ball_y = float(self.h // 2)
+        dx = 1.0 if self.server == 'player' else -1.0
+        self.ball_dx = dx
+        self.ball_dy = random.choice([-0.5, 0.5])
+        self.serving = False
+        self.rally = 0
+
+    def handle_input(self, key):
+        if key == ord('w') or key == curses.KEY_UP:
+            self.player_y = max(2, self.player_y - 2)
+        elif key == ord('s') or key == curses.KEY_DOWN:
+            self.player_y = min(self.h - self.PADDLE_H - 2, self.player_y + 2)
+        elif key == ord(' ') and self.serving:
+            self._serve()
+
+    def update(self):
+        self.frame += 1
+        if self.serving:
+            return
+
+        self.ball_x += self.ball_dx
+        self.ball_y += self.ball_dy
+
+        # Wall bounce (top/bottom)
+        if self.ball_y <= 2:
+            self.ball_y = 2.0
+            self.ball_dy = abs(self.ball_dy)
+        elif self.ball_y >= self.h - 3:
+            self.ball_y = float(self.h - 3)
+            self.ball_dy = -abs(self.ball_dy)
+
+        # Player paddle (left, x=4)
+        if (self.ball_dx < 0 and 3 <= int(self.ball_x) <= 5 and
+                self.player_y - 1 <= int(self.ball_y) <= self.player_y + self.PADDLE_H):
+            self.ball_dx = abs(self.ball_dx)
+            hit = (self.ball_y - self.player_y) / self.PADDLE_H
+            self.ball_dy = (hit - 0.5) * 2.0
+            self.rally += 1
+            self._speed_up()
+
+        # AI paddle (right, x=w-5)
+        ai_x = self.w - 5
+        if (self.ball_dx > 0 and ai_x - 1 <= int(self.ball_x) <= ai_x + 1 and
+                self.ai_y - 1 <= int(self.ball_y) <= self.ai_y + self.PADDLE_H):
+            self.ball_dx = -abs(self.ball_dx)
+            hit = (self.ball_y - self.ai_y) / self.PADDLE_H
+            self.ball_dy = (hit - 0.5) * 2.0
+            self.rally += 1
+            self._speed_up()
+
+        # Scoring
+        if self.ball_x <= 1:
+            self.ai_score += 1
+            self.server = 'player'
+            self.serving = True
+            self._check_win()
+        elif self.ball_x >= self.w - 2:
+            self.player_score += 1
+            self.score = self.player_score
+            self.server = 'ai'
+            self.serving = True
+            self._check_win()
+
+        # AI target prediction
+        if self.frame % self.ai_react == 0:
+            if self.ball_dx > 0:
+                dist = max(1.0, ai_x - self.ball_x)
+                pred_y = self.ball_y + self.ball_dy * (dist / max(0.1, abs(self.ball_dx)))
+                pred_y += random.uniform(-self.ai_error, self.ai_error)
+                self.ai_target = max(2.0, min(float(self.h - 3), pred_y))
+            else:
+                self.ai_target = float(self.h // 2)
+
+        # AI movement
+        ai_center = self.ai_y + self.PADDLE_H / 2.0
+        if ai_center < self.ai_target - 0.5:
+            move = max(1, round(self.ai_speed * 2))
+            self.ai_y = min(self.h - self.PADDLE_H - 2, self.ai_y + move)
+        elif ai_center > self.ai_target + 0.5:
+            move = max(1, round(self.ai_speed * 2))
+            self.ai_y = max(2, self.ai_y - move)
+
+    def _speed_up(self):
+        speed = (self.ball_dx ** 2 + self.ball_dy ** 2) ** 0.5
+        if speed < 2.5:
+            self.ball_dx *= 1.05
+            self.ball_dy *= 1.05
+
+    def _check_win(self):
+        if self.player_score >= self.WIN_SCORE:
+            self.won = True
+            self.game_over = True
+        elif self.ai_score >= self.WIN_SCORE:
+            self.game_over = True
+
+    def draw(self):
+        # Title
+        self.safe_addstr(0, 2, 'PONG', curses.A_BOLD)
+
+        # Scores
+        score_s = f'{self.player_score}    {self.ai_score}'
+        self.center_text(1, score_s, curses.A_BOLD)
+        sc_x = max(0, (self.w - len(score_s)) // 2)
+        self.safe_addstr(1, max(0, sc_x - 4), 'YOU',
+                         curses.color_pair(1))
+        self.safe_addstr(1, min(self.w - 3, sc_x + len(score_s) + 1), 'CPU',
+                         curses.color_pair(2))
+
+        # Center net
+        mid_x = self.w // 2
+        for y in range(2, self.h - 1):
+            if y % 2 == 0:
+                self.safe_addstr(y, mid_x, ':', curses.color_pair(4))
+
+        # Player paddle (left)
+        for i in range(self.PADDLE_H):
+            self.safe_addstr(self.player_y + i, 4, '|',
+                             curses.color_pair(1) | curses.A_BOLD)
+
+        # AI paddle (right)
+        for i in range(self.PADDLE_H):
+            self.safe_addstr(self.ai_y + i, self.w - 5, '|',
+                             curses.color_pair(2) | curses.A_BOLD)
+
+        # Ball
+        if not self.serving:
+            self.safe_addstr(int(self.ball_y), int(self.ball_x), 'O',
+                             curses.color_pair(3) | curses.A_BOLD)
+        else:
+            self.center_text(self.h // 2, ' Press SPACE to serve ',
+                             curses.color_pair(4) | curses.A_REVERSE)
+
+        # Controls
+        self.safe_addstr(self.h - 1, 2,
+                         'W/S:Move  Space:Serve  ?:Help',
                          curses.color_pair(4))
 
 
 # ─── Menu ────────────────────────────────────────────────────────────────────
 
+_ICONS = {'snake': '~o~', 'tetris': '[#]', '2048': ' 2K', 'dino': '/^\\',
+          'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|'}
+
 _GAMES = [
-    ("Snake",       "Classic snake - eat food, grow longer",     SnakeGame),
-    ("Tetris",      "Stack blocks, clear lines",                 TetrisGame),
-    ("2048",        "Slide and merge tiles to reach 2048",       Game2048),
-    ("Dino Runner", "Jump over obstacles, survive!",             DinoGame),
-    ("Breakout",    "Break all the bricks with a bouncing ball", BreakoutGame),
+    ("Snake",         "Classic snake - eat food, grow longer",     SnakeGame),
+    ("Tetris",        "Stack blocks, clear lines",                 TetrisGame),
+    ("2048",          "Slide and merge tiles to reach 2048",       Game2048),
+    ("Dino Runner",   "Jump over obstacles, survive!",             DinoGame),
+    ("Breakout",      "Break all the bricks with a bouncing ball", BreakoutGame),
+    ("Space Shooter", "Blast enemies, defeat bosses",              ShooterGame),
+    ("Pong",          "Classic paddle game vs AI",                 PongGame),
 ]
 
 _TITLE = [
@@ -1029,7 +1757,9 @@ _TITLE = [
 ]
 
 _GAME_MAP = {g[0].lower().replace(' ', ''): g[2] for g in _GAMES}
-_GAME_MAP.update({'dino': DinoGame, '2048': Game2048})
+_GAME_MAP.update({'dino': DinoGame, '2048': Game2048,
+                  'shooter': ShooterGame, 'space': ShooterGame,
+                  'pong': PongGame})
 
 
 def _safe(stdscr, y, x, text, attr=0):
@@ -1044,8 +1774,15 @@ def _safe(stdscr, y, x, text, attr=0):
 def _run_game(stdscr, cls):
     curses.curs_set(0)
     init_colors()
+    difficulty = None
     while True:
-        result = cls(stdscr).run()
+        game = cls(stdscr)
+        if game.supports_difficulty:
+            if difficulty is None and not Game.has_save(game.name):
+                difficulty = Game._select_difficulty(stdscr)
+            if difficulty:
+                game.difficulty = difficulty
+        result = game.run()
         if result != 'retry':
             break
 
@@ -1058,9 +1795,9 @@ def _menu(stdscr):
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
-        if h < 18 or w < 44:
+        if h < 22 or w < 44:
             _safe(stdscr, h // 2, max(0, (w - 30) // 2),
-                  f'Need 44x18 terminal ({w}x{h})', curses.A_BOLD)
+                  f'Need 44x22 terminal ({w}x{h})', curses.A_BOLD)
             stdscr.noutrefresh()
             curses.doupdate()
             stdscr.getch()
@@ -1081,23 +1818,27 @@ def _menu(stdscr):
             if y + 1 >= h - 2:
                 break
             hi = load_high_score(cls.name)
+            icon = _ICONS.get(cls.name, '   ')
             if i == sel:
                 _safe(stdscr, y, bx, ' > ', curses.color_pair(1))
-                _safe(stdscr, y, bx + 3, f'{name:<14}',
+                _safe(stdscr, y, bx + 3, icon,
+                      curses.color_pair(5) | curses.A_BOLD)
+                _safe(stdscr, y, bx + 7, f'{name:<14}',
                       curses.A_BOLD | curses.A_REVERSE)
             else:
-                _safe(stdscr, y, bx + 3, f'{name:<14}', curses.A_BOLD)
+                _safe(stdscr, y, bx + 3, icon, curses.color_pair(5))
+                _safe(stdscr, y, bx + 7, f'{name:<14}', curses.A_BOLD)
             sv = Game.has_save(cls.name)
             if sv is not None:
-                _safe(stdscr, y, bx + 18, f'[Resume:{sv}]',
-                      curses.color_pair(1))
+                _safe(stdscr, y, bx + 22, f'[Resume:{sv}]',
+                      curses.color_pair(1) | curses.A_BOLD)
             elif hi > 0:
-                _safe(stdscr, y, bx + 18, f'[Best: {hi}]',
+                _safe(stdscr, y, bx + 22, f'[Best: {hi}]',
                       curses.color_pair(3))
-            _safe(stdscr, y + 1, bx + 3, desc[:38], curses.color_pair(4))
+            _safe(stdscr, y + 1, bx + 7, desc[:38], curses.color_pair(4))
 
         cy = min(h - 2, ly + len(_GAMES) * 2 + 1)
-        ctrl = "Up/Down: Select   Enter: Play   Q: Quit"
+        ctrl = "Up/Down: Select   Enter: Play   ?: Help   Q: Quit"
         _safe(stdscr, cy, max(0, (w - len(ctrl)) // 2), ctrl,
               curses.color_pair(7))
         stdscr.noutrefresh()
