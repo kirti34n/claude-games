@@ -193,6 +193,11 @@ pip install .
 A text-only mode that needs no terminal UI (and no curses), handy for playing
 one move at a time, for example inside a chat or an editor.
 
+<div align="center">
+<img src="assets/cli-connect4.gif" width="300" alt="Connect Four in the turn-based CLI mode"><br>
+<sub>Connect Four vs the AI, one <code>play &lt;column&gt;</code> at a time</sub>
+</div>
+
 ```bash
 play cli start snake         # also: 2048, minesweeper, connect4
 play w                       # move (WASD), or up / down / left / right
