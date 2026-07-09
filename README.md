@@ -1,14 +1,13 @@
 # play - Terminal Mini Games
 
 <p align="center">
-  <img src="https://img.shields.io/badge/python-3.7+-blue.svg" alt="Python 3.7+">
-  <img src="https://img.shields.io/badge/dependencies-zero-green.svg" alt="Zero Dependencies">
+  <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="MIT License">
-  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20WSL-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20WSL%20%7C%20Windows-lightgrey.svg" alt="Platform">
 </p>
 
 <p align="center">
-  10 classic games in your terminal. Zero dependencies. Just <code>play</code>.
+  13 classic games in your terminal. Just <code>play</code>.
 </p>
 
 ---
@@ -25,6 +24,10 @@
 ```bash
 pip install claude-games
 ```
+
+The full-screen games use Python's `curses`. It's built in on Linux/macOS; on
+Windows the install also pulls in `windows-curses` automatically. The turn-based
+`play cli` games need no curses at all.
 
 Or from source:
 
@@ -48,6 +51,9 @@ pip install .
 | **Flappy Bird** | `play flappy` | Flap through pipes, don't crash |
 | **Minesweeper** | `play mines` | Uncover cells, avoid mines |
 | **Pac-Man** | `play pacman` | Eat dots, avoid ghosts |
+| **Sokoban** | `play sokoban` | Push every box onto a target |
+| **Reversi** | `play reversi` | Outflank the AI on an 8x8 board |
+| **Frogger** | `play frogger` | Cross the road and river to the home bays |
 
 ## Quick Start
 
@@ -62,37 +68,38 @@ play list         # See all games + high scores
 
 ```
  WASD / Arrow Keys   Move / Navigate
- Space               Jump (Dino) / Hard Drop (Tetris) / Launch (Breakout) / Fire (Shooter) / Serve (Pong)
+ Space               Jump (Dino) / Hard Drop (Tetris) / Launch (Breakout) / Fire (Shooter) / Serve (Pong) / Place (Reversi)
  W                   Rotate (Tetris)
  P                   Pause
  ESC / Q             Quit (auto-saves progress)
  ?/H                 Show controls help
  F                   Flag (Minesweeper)
+ U                   Undo (Sokoban)
+ R                   Reset level (Sokoban) / Retry after game over
  T                   Cycle color theme (menu)
- R                   Retry after game over
 ```
 
 ## Features
 
-- **Auto-save** — Quit mid-game with ESC, resume next time you play
-- **High scores** — Tracked per game, shown in menu
-- **Zero dependencies** — Pure Python, just curses (built-in)
-- **Single file** — Entire codebase is one `play.py`
-- **Difficulty selection** — Choose Easy/Medium/Hard for Shooter and Pong
-- **In-game help** — Press `?` during any game to see controls
-- **Color themes** — Cycle themes with T in the menu (default, retro, ocean)
-- **Sound effects** — Terminal beep on new high scores
-- **Adaptive difficulty** — Snake speeds up as you score, Tetris levels up
-- **Ghost piece** — Tetris shows where your piece will land
-- **Works everywhere** — Linux, macOS, WSL2
+- **Auto-save**: Quit mid-game with ESC, resume next time you play
+- **High scores**: Tracked per game, shown in menu
+- **Pure Python**: No third-party deps on Linux/macOS (Windows pulls in `windows-curses`)
+- **Single file**: Entire codebase is one `play.py`
+- **Difficulty selection**: Choose Easy/Medium/Hard for Shooter and Pong
+- **In-game help**: Press `?` during any game to see controls
+- **Color themes**: Cycle themes with T in the menu (default, retro, ocean)
+- **Sound effects**: Terminal beep on new high scores
+- **Adaptive difficulty**: Snake speeds up as you score, Tetris levels up
+- **Ghost piece**: Tetris shows where your piece will land
+- **Works everywhere**: Linux, macOS, WSL2, Windows
 
 ## Claude Code Integration
 
-Works as a slash command inside [Claude Code](https://claude.ai/claude-code) — play games while Claude works in the background.
+Run it from inside [Claude Code](https://claude.ai/claude-code) with the `!` bash prefix: play while Claude works in the background.
 
 ```
-/play snake         # Launch a game
-! play              # Open game menu directly
+! play snake        # Launch a game in a new window / split pane
+! play              # Open the game menu
 ```
 
 **Turn-based CLI mode** for in-conversation play (no terminal needed):
@@ -121,7 +128,10 @@ play.py (single file)
 │   ├── Pong
 │   ├── Flappy Bird
 │   ├── Minesweeper
-│   └── Pac-Man
+│   ├── Pac-Man
+│   ├── Sokoban
+│   ├── Reversi
+│   └── Frogger
 ├── CLI Games (turn-based)         # Text output, no curses needed
 │   ├── Snake
 │   ├── 2048

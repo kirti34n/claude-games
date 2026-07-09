@@ -13,6 +13,9 @@ Usage:
     play flappy       Play Flappy Bird interactively
     play mines        Play Minesweeper interactively
     play pacman       Play Pac-Man interactively
+    play sokoban      Play Sokoban interactively
+    play reversi      Play Reversi / Othello vs AI
+    play frogger      Play Frogger interactively
 
     play cli                    Show in-conversation game menu
     play cli start snake        Start Snake (turn-based)
@@ -31,11 +34,21 @@ Usage:
 
 Install:
     pip install claude-games
+
+Note: the full-screen games use Python's curses module. It ships with Python on
+Linux/macOS; on Windows `pip install claude-games` also pulls in windows-curses.
+The turn-based `play cli ...` games and text commands work with no curses at all.
 """
 
-__version__ = '2.4.1'
+__version__ = '2.5.0'
 
-import curses
+try:
+    import curses
+except ImportError:
+    # curses is not bundled with CPython on Windows. The interactive games need
+    # it (install `windows-curses`), but the turn-based `play cli` mode and all
+    # text commands must still work without it, so we degrade gracefully.
+    curses = None
 import json
 import locale
 import os
@@ -43,6 +56,8 @@ import random
 import sys
 import time
 from pathlib import Path
+
+_HAS_CURSES = curses is not None
 
 
 def _open_in_terminal(game_args: str = ''):
@@ -52,7 +67,22 @@ def _open_in_terminal(game_args: str = ''):
     play_bin = shutil.which('play') or sys.argv[0]
     cmd_str = f'{play_bin} {game_args}'.strip()
 
-    # Prefer tmux split pane — game runs alongside Claude in the same terminal
+    # Native Windows: open the game in its own new console window. Use an argv
+    # list + CREATE_NEW_CONSOLE so subprocess quotes paths that contain spaces
+    # (e.g. C:\Program Files\...) correctly, instead of a shell string.
+    if os.name == 'nt':
+        try:
+            if play_bin.endswith('.py'):
+                argv = [sys.executable, play_bin]
+            else:
+                argv = [play_bin]
+            argv += game_args.split()
+            subprocess.Popen(argv, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            return True
+        except Exception:
+            return False
+
+    # Prefer tmux split pane: game runs alongside Claude in the same terminal
     tmux = shutil.which('tmux')
     if tmux and os.environ.get('TMUX'):
         subprocess.Popen(
@@ -67,7 +97,7 @@ def _open_in_terminal(game_args: str = ''):
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
 
-    # tmux available but not in a session — start one with the game
+    # tmux available but not in a session: start one with the game
     if tmux:
         subprocess.Popen(
             [tmux, 'new-session', '-d', '-s', 'play', 'bash', '-lc', cmd_str],
@@ -90,10 +120,20 @@ def _open_in_terminal(game_args: str = ''):
 
 def _curses_wrapper(func, game_name: str = ''):
     """Like curses.wrapper but opens a new terminal window when no TTY is available."""
+    if not _HAS_CURSES:
+        print("The interactive games need Python's curses module, which isn't "
+              "available here.", file=sys.stderr)
+        if os.name == 'nt':
+            print("On Windows, install it with:  pip install windows-curses",
+                  file=sys.stderr)
+        print("Or play the turn-based versions with no terminal needed:\n"
+              "  play cli start snake   (also: 2048, minesweeper, connect4)",
+              file=sys.stderr)
+        sys.exit(1)
     if sys.stdin.isatty() and sys.stdout.isatty():
         return curses.wrapper(func)
 
-    # No TTY — try to open in a split pane or new window
+    # No TTY: try to open in a split pane or new window
     if _open_in_terminal(game_name):
         name = game_name or 'game menu'
         if os.environ.get('TMUX'):
@@ -134,24 +174,21 @@ def save_high_score(name: str, score: int):
 
 # ─── Colors & Themes ─────────────────────────────────────────────────────────
 
+# Themes reference colors by name (not curses.COLOR_*) so this module imports
+# even when curses is unavailable; names resolve to curses constants in
+# init_colors(), which only runs on the interactive (curses) path.
 _THEMES = {
     'default': [
-        (1, curses.COLOR_GREEN, -1), (2, curses.COLOR_RED, -1),
-        (3, curses.COLOR_YELLOW, -1), (4, curses.COLOR_CYAN, -1),
-        (5, curses.COLOR_MAGENTA, -1), (6, curses.COLOR_BLUE, -1),
-        (7, curses.COLOR_WHITE, -1),
+        (1, 'GREEN'), (2, 'RED'), (3, 'YELLOW'), (4, 'CYAN'),
+        (5, 'MAGENTA'), (6, 'BLUE'), (7, 'WHITE'),
     ],
     'retro': [
-        (1, curses.COLOR_YELLOW, -1), (2, curses.COLOR_RED, -1),
-        (3, curses.COLOR_GREEN, -1), (4, curses.COLOR_WHITE, -1),
-        (5, curses.COLOR_RED, -1), (6, curses.COLOR_YELLOW, -1),
-        (7, curses.COLOR_GREEN, -1),
+        (1, 'YELLOW'), (2, 'RED'), (3, 'GREEN'), (4, 'WHITE'),
+        (5, 'RED'), (6, 'YELLOW'), (7, 'GREEN'),
     ],
     'ocean': [
-        (1, curses.COLOR_CYAN, -1), (2, curses.COLOR_MAGENTA, -1),
-        (3, curses.COLOR_WHITE, -1), (4, curses.COLOR_BLUE, -1),
-        (5, curses.COLOR_CYAN, -1), (6, curses.COLOR_BLUE, -1),
-        (7, curses.COLOR_WHITE, -1),
+        (1, 'CYAN'), (2, 'MAGENTA'), (3, 'WHITE'), (4, 'BLUE'),
+        (5, 'CYAN'), (6, 'BLUE'), (7, 'WHITE'),
     ],
 }
 
@@ -180,20 +217,42 @@ def _save_theme(name):
     cfg_file.write_text(json.dumps(cfg, indent=2))
 
 
+def _color(name):
+    return getattr(curses, 'COLOR_' + name, 0)
+
+
 def init_colors():
-    curses.start_color()
-    curses.use_default_colors()
+    """Initialize color pairs, degrading gracefully on mono/limited terminals."""
+    if not _HAS_CURSES:
+        return
+    try:
+        curses.start_color()
+    except curses.error:
+        return
+    if not curses.has_colors():
+        return
+    try:
+        curses.use_default_colors()
+        bg = -1
+    except curses.error:
+        bg = curses.COLOR_BLACK
     theme = _THEMES.get(_current_theme, _THEMES['default'])
-    for pair_id, fg, bg in theme:
-        curses.init_pair(pair_id, fg, bg)
+    for pair_id, name in theme:
+        try:
+            curses.init_pair(pair_id, _color(name), bg)
+        except curses.error:
+            pass
     if curses.COLORS >= 8:
-        curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_RED)
-        curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_GREEN)
-        curses.init_pair(10, curses.COLOR_BLACK, curses.COLOR_YELLOW)
-        curses.init_pair(11, curses.COLOR_WHITE, curses.COLOR_BLUE)
-        curses.init_pair(12, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
-        curses.init_pair(13, curses.COLOR_BLACK, curses.COLOR_CYAN)
-        curses.init_pair(14, curses.COLOR_BLACK, curses.COLOR_WHITE)
+        highlight = [
+            (8, 'WHITE', 'RED'), (9, 'WHITE', 'GREEN'), (10, 'BLACK', 'YELLOW'),
+            (11, 'WHITE', 'BLUE'), (12, 'WHITE', 'MAGENTA'), (13, 'BLACK', 'CYAN'),
+            (14, 'BLACK', 'WHITE'),
+        ]
+        for pid, fg, bgn in highlight:
+            try:
+                curses.init_pair(pid, _color(fg), _color(bgn))
+            except curses.error:
+                pass
 
 
 # ─── Base Game ───────────────────────────────────────────────────────────────
@@ -343,48 +402,42 @@ class Game:
             return None
 
     def run(self):
-        curses.curs_set(0)
-        self.setup()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        try:
+            self.setup()
+        except Exception:
+            # Save was valid JSON but an incompatible schema (older/newer
+            # version, truncation). _load_save already consumed it, so a clean
+            # re-init starts a fresh game instead of crashing on resume.
+            diff = self.difficulty
+            self.__init__(self.stdscr)
+            self.difficulty = diff  # keep the caller-selected difficulty
+            self.setup()
         self.h, self.w = self.stdscr.getmaxyx()
-        self.stdscr.clear()
-        self.draw()
-        self.stdscr.noutrefresh()
-        curses.doupdate()
 
         timeout = self.get_timeout()
         self.stdscr.timeout(timeout)
 
+        first = True
         while True:
-            key = self.stdscr.getch()
+            key = -1 if first else self.stdscr.getch()
+            first = False
             self.h, self.w = self.stdscr.getmaxyx()
 
             if key == 27 or key == ord('q'):
                 if not self.game_over:
                     self._auto_save()
+                self.stdscr.nodelay(False)
                 return 'quit'
             if key == ord('p') and not self.game_over:
                 self.paused = not self.paused
-                if self.paused:
-                    self.center_text(self.h // 2,
-                                     '  PAUSED  -  Press P to resume  ',
-                                     curses.A_REVERSE | curses.A_BOLD)
-                    self.stdscr.noutrefresh()
-                    curses.doupdate()
-                continue
-            if self.paused:
-                continue
-            if key == ord('?') or key == ord('H'):
+            elif key == ord('?') or key == ord('H'):
                 self._show_help = not self._show_help
-                if self._show_help:
-                    self._draw_help_overlay()
-                    self.stdscr.noutrefresh()
-                    curses.doupdate()
-                continue
-            if self._show_help:
-                self._show_help = False
-            if not self.game_over:
-                self.handle_input(key)
-                self.update()
+            elif key != -1 and self._show_help:
+                self._show_help = False  # any other key closes help
 
             # Update timeout if it changed (e.g. snake speeds up)
             new_timeout = self.get_timeout()
@@ -393,6 +446,8 @@ class Game:
                 self.stdscr.timeout(timeout)
 
             self.stdscr.erase()
+            # Size gate runs BEFORE advancing state, so a shrunk terminal pauses
+            # the game (visibly) instead of playing on invisibly.
             if self.h < self.min_h or self.w < self.min_w:
                 self.center_text(self.h // 2,
                                  f'Terminal too small ({self.w}x{self.h})')
@@ -401,9 +456,22 @@ class Game:
                 self.stdscr.noutrefresh()
                 curses.doupdate()
                 continue
+
+            active = not self.paused and not self._show_help and not self.game_over
+            if active:
+                if key != -1:
+                    self.handle_input(key)
+                self.update()
+
             self.draw()
-            if self.game_over:
+            if self.game_over and not self._show_help:
                 return self._game_over_screen()
+            if self._show_help:
+                self._draw_help_overlay()
+            elif self.paused:
+                self.center_text(self.h // 2,
+                                 '  PAUSED  -  Press P to resume  ',
+                                 curses.A_REVERSE | curses.A_BOLD)
             self.stdscr.noutrefresh()
             curses.doupdate()
 
@@ -463,6 +531,7 @@ class SnakeGame(Game):
             self.next_direction = tuple(saved['ndir'])
             self.food = tuple(saved['food'])
             self.score = saved['score']
+            self._fit_bounds()
             return
         self.board_h = min(22, self.h - 4)
         self.board_w = min(50, self.w - 4)
@@ -476,6 +545,13 @@ class SnakeGame(Game):
         self.score = 0
         self.food = None
         self._spawn_food()
+        self._fit_bounds()
+
+    def _fit_bounds(self):
+        # Require a terminal at least as big as the (possibly resumed) board, so
+        # run()'s size gate shows "too small" instead of drawing walls off-screen.
+        self.min_w = max(30, self.board_w + 2)
+        self.min_h = max(15, self.board_h + 3)
 
     def get_save_data(self):
         return {'bh': self.board_h, 'bw': self.board_w,
@@ -513,17 +589,24 @@ class SnakeGame(Game):
         if ny <= 0 or ny >= self.board_h - 1 or nx <= 0 or nx >= self.board_w - 1:
             self.game_over = True
             return
-        if nh in self.snake:
+        grow = (nh == self.food)
+        # The tail vacates its cell this tick (unless growing), so chasing your
+        # own tail is legal: only the segments that remain count as collisions.
+        body = self.snake if grow else self.snake[:-1]
+        if nh in body:
             self.game_over = True
             return
         self.snake.insert(0, nh)
-        if nh == self.food:
+        if grow:
             self.score += 1
             self._spawn_food()
         else:
             self.snake.pop()
 
     def draw(self):
+        # Re-center every frame so a resize keeps the board centered.
+        self.board_y = max(1, (self.h - self.board_h) // 2)
+        self.board_x = max(1, (self.w - self.board_w) // 2)
         by, bx = self.board_y, self.board_x
         self.safe_addstr(by - 1, bx, f' SNAKE  Score: {self.score} ',
                          curses.A_BOLD)
@@ -930,6 +1013,7 @@ class DinoGame(Game):
         return self.h - 5
 
     def setup(self):
+        self._hi = load_high_score(self.name)  # cache; can't change mid-game
         saved = self._load_save(self.name)
         if saved:
             self.dino_x = 8
@@ -976,6 +1060,7 @@ class DinoGame(Game):
             self.score += 1
         self.speed = min(3.0, 1.0 + self.score / 100.0)
 
+        prev_dino_y = self.dino_y  # for coherent swept collision below
         if not self.on_ground:
             self.dino_y += self.velocity
             self.velocity += self.gravity
@@ -993,17 +1078,27 @@ class DinoGame(Game):
             self._spawn()
 
         gy = self.ground_y
-        dt = gy + int(self.dino_y) - 2
         db = gy + int(self.dino_y)
+        dt = db - 2
         dl, dr = self.dino_x + 1, self.dino_x + 2  # tighter dino hitbox
+        # Only sweep the columns an obstacle crossed this tick when the dino was
+        # on the ground the WHOLE tick - that is the case a fast obstacle could
+        # tunnel through the narrow hitbox. While the dino is airborne/landing,
+        # use the forgiving single end-position test so clearing a cactus and
+        # touching down beside it is not a false hit.
+        grounded = (prev_dino_y == 0.0 and self.dino_y == 0.0)
         for obs in self.obstacles:
-            ox = int(obs['x'])
             art = obs['art']
             oh = len(art)
             ow = max(len(l) for l in art)
-            # Shrink obstacle hitbox by 1 on each side (spaces in art)
-            if (dr >= ox + 1 and dl <= ox + ow - 2 and
-                    db >= gy - oh + 1 and dt <= gy):
+            if grounded:
+                lo = int(obs['x'])
+                hi = int(obs['x'] + self.speed)
+                hit_x = (lo + 1 <= dr and hi + ow - 2 >= dl)
+            else:
+                ox = int(obs['x'])
+                hit_x = (ox + 1 <= dr and ox + ow - 2 >= dl)
+            if hit_x and db >= gy - oh + 1 and dt <= gy:
                 self.game_over = True
                 return
 
@@ -1021,7 +1116,7 @@ class DinoGame(Game):
     def draw(self):
         gy = self.ground_y
         sc = f'Score: {self.score}'
-        hi = f'HI: {max(self.score, load_high_score(self.name))}'
+        hi = f'HI: {max(self.score, self._hi)}'
         self.safe_addstr(1, self.w - len(sc) - 2, sc, curses.A_BOLD)
         self.safe_addstr(1, self.w - len(sc) - len(hi) - 4, hi,
                          curses.color_pair(3))
@@ -1086,6 +1181,7 @@ class BreakoutGame(Game):
                            for k, v in saved['bricks'].items()}
             self.score = saved['score']
             self.lives = saved['lives']
+            self._fit_bounds()
             return
 
         self.area_w = min(52, self.w - 4)
@@ -1116,6 +1212,13 @@ class BreakoutGame(Game):
                        for c in range(self.bricks_per_row)}
         self.score = 0
         self.lives = 3
+        self._fit_bounds()
+
+    def _fit_bounds(self):
+        # Gate on the actual play-area footprint so a resumed/resized terminal
+        # smaller than the board shows "too small" instead of drawing off-screen.
+        self.min_w = max(44, self.area_w + 2)
+        self.min_h = max(22, self.area_h + 2)
 
     def get_save_data(self):
         bricks = {f'{r},{c}': v for (r, c), v in self.bricks.items()}
@@ -1203,6 +1306,9 @@ class BreakoutGame(Game):
         self.ball_y = float(self.paddle_y - 1)
 
     def draw(self):
+        # Re-center each frame (never negative) so resize/resume stays on-screen.
+        self.area_x = max(0, (self.w - self.area_w) // 2)
+        self.area_y = max(0, (self.h - self.area_h) // 2)
         ax, ay = self.area_x, self.area_y
         self.draw_box(ay, ax, self.area_h, self.area_w)
         hearts = '*' * self.lives
@@ -1320,12 +1426,12 @@ class ShooterGame(Game):
             self.bullets.append({'x': self.player_x + 2, 'y': by + 1})
 
     def _spawn_enemy(self):
-        if self.boss:
-            return
+        if self.boss or self.w < 9:
+            return  # randint(3, w-6) needs w >= 9; bail on ultra-narrow screens
         types = ['basic'] * 50 + ['zigzag'] * 25 + ['diver'] * 15 + ['tank'] * 10
         etype = random.choice(types)
         hp = 3 if etype == 'tank' else 1
-        x = random.randint(3, self.w - 6)
+        x = random.randint(3, max(3, self.w - 6))
         self.enemies.append({
             'x': x, 'base_x': x, 'y': 2,
             'type': etype, 'hp': hp, 'frame': 0,
@@ -1605,7 +1711,9 @@ class PongGame(Game):
                 setattr(self, k, v)
             return
         diff = self.difficulty
-        self.ai_speed = {'easy': 0.5, 'medium': 0.8, 'hard': 1.0}[diff]
+        # Values chosen so the paddle step (max(1, round(ai_speed*2))) is a
+        # distinct 1 / 2 / 3 cells per move across the three difficulties.
+        self.ai_speed = {'easy': 0.5, 'medium': 1.0, 'hard': 1.5}[diff]
         self.ai_error = {'easy': 3.0, 'medium': 1.5, 'hard': 0.5}[diff]
         self.ai_react = {'easy': 8, 'medium': 4, 'hard': 2}[diff]
         self.player_y = self.h // 2 - self.PADDLE_H // 2
@@ -1812,6 +1920,9 @@ class FlappyGame(Game):
             self.frame = saved['frame']
             self.speed = saved['speed']
             self.pipe_timer = saved['pipe_timer']
+            # A shorter resumed terminal could leave the bird at/below the new
+            # ground; clamp so resuming doesn't instantly end the run.
+            self.bird_y = max(1.0, min(self.bird_y, self.h - 3.0))
             return
         self.bird_y = float(self.h // 2)
         self.bird_vel = 0.0
@@ -1933,6 +2044,8 @@ class MinesweeperGame(Game):
             self.score = saved['score']
             self.frame = saved['frame']
             self.first_reveal = saved['first_reveal']
+            self.difficulty = saved.get('difficulty', self.difficulty)
+            self._fit_bounds()
             return
         cfg = {'easy': (9, 9, 10), 'medium': (16, 16, 40), 'hard': (16, 30, 99)}
         self.rows, self.cols, self.num_mines = cfg.get(self.difficulty, (9, 9, 10))
@@ -1944,6 +2057,13 @@ class MinesweeperGame(Game):
         self.grid = [[0] * self.cols for _ in range(self.rows)]
         self.revealed = [[False] * self.cols for _ in range(self.rows)]
         self.flagged = [[False] * self.cols for _ in range(self.rows)]
+        self._fit_bounds()
+
+    def _fit_bounds(self):
+        # The hard board is 30 cols = 60 render columns, far wider than the
+        # class min_w=40, so gate on the real board size to avoid clipping.
+        self.min_w = max(40, self.cols * 2 + 4)
+        self.min_h = max(22, self.rows + 6)
 
     def _place_mines(self, safe_r, safe_c):
         forbidden = set()
@@ -2085,7 +2205,8 @@ class MinesweeperGame(Game):
                 'grid': self.grid, 'revealed': self.revealed,
                 'flagged': self.flagged, 'cur_r': self.cur_r, 'cur_c': self.cur_c,
                 'score': self.score, 'frame': self.frame,
-                'first_reveal': self.first_reveal}
+                'first_reveal': self.first_reveal,
+                'difficulty': self.difficulty}
 
 
 # ─── Pac-Man ────────────────────────────────────────────────────────────────
@@ -2216,14 +2337,18 @@ class PacManGame(Game):
         elif key in (curses.KEY_RIGHT, ord('d')):
             self.next_dir = (0, 1)
 
+    def _in_pen(self, y, x):
+        """True while a ghost is still inside the ghost house (or on the door)."""
+        return 9 <= y <= 10 and 9 <= x <= 17
+
     def _move_ghost(self, ghost):
         gy, gx = ghost['y'], ghost['x']
         gdir = ghost['dir']
         reverse = (-gdir[0], -gdir[1])
+        in_pen = self._in_pen(gy, gx)
 
-        if ghost['eaten']:
-            ty, tx = 10, 13
-        elif self.frightened:
+        # Frightened ghosts (that haven't been eaten) flee in a random direction.
+        if self.frightened and not ghost['eaten']:
             dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
             random.shuffle(dirs)
             for d in dirs:
@@ -2239,6 +2364,12 @@ class PacManGame(Game):
                 ghost['dir'] = reverse
                 ghost['y'], ghost['x'] = ny, nx
             return
+
+        # Choose a target cell to steer toward.
+        if ghost['eaten']:
+            ty, tx = 10, 13                       # return home to the pen
+        elif in_pen:
+            ty, tx = 8, 13                         # head up and out through the door
         else:
             b = ghost['behavior']
             if b == 'chase':
@@ -2248,34 +2379,49 @@ class PacManGame(Game):
                 tx = self.pac_x + self.pac_dir[1] * 4
             elif b == 'clyde':
                 dist = abs(gy - self.pac_y) + abs(gx - self.pac_x)
-                if dist > 8:
-                    ty, tx = self.pac_y, self.pac_x
-                else:
-                    ty, tx = self._maze_rows() - 2, 1
-            else:  # random (Inky)
+                ty, tx = (self.pac_y, self.pac_x) if dist > 8 \
+                    else (self._maze_rows() - 2, 1)
+            else:  # 'random' (Inky): wander, but no longer refuse the door
                 dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
                 random.shuffle(dirs)
                 for d in dirs:
                     if d == reverse:
                         continue
                     ny, nx = gy + d[0], self._wrap_x(gx + d[1])
-                    if not self._is_wall(ny, nx) and not self._is_ghost_door(ny, nx):
+                    if not self._is_wall(ny, nx):
                         ghost['dir'] = d
                         ghost['y'], ghost['x'] = ny, nx
                         return
+                ny, nx = gy + reverse[0], self._wrap_x(gx + reverse[1])
+                if not self._is_wall(ny, nx):     # dead end: turn around
+                    ghost['dir'] = reverse
+                    ghost['y'], ghost['x'] = ny, nx
                 return
 
-        best_dir, best_dist = None, 999999
+        # Greedy distance-minimizing step. The door is passable only for ghosts
+        # that are leaving the pen or returning home, so free ghosts can't
+        # wander back inside.
+        allow_door = ghost['eaten'] or in_pen
+        best_dir, best_dist = None, 10 ** 9
         for d in [(-1, 0), (0, 1), (1, 0), (0, -1)]:
             if d == reverse and not ghost['eaten']:
                 continue
             ny, nx = gy + d[0], self._wrap_x(gx + d[1])
             if self._is_wall(ny, nx):
                 continue
+            if self._is_ghost_door(ny, nx) and not allow_door:
+                continue
             dist = abs(ny - ty) + abs(nx - tx)
             if dist < best_dist:
-                best_dist = dist
-                best_dir = d
+                best_dist, best_dir = dist, d
+
+        # Reverse fallback: if the only open neighbor is behind us, turn around
+        # instead of freezing (fixes ghosts stalling in pen dead-ends).
+        if best_dir is None:
+            ny, nx = gy + reverse[0], self._wrap_x(gx + reverse[1])
+            if not self._is_wall(ny, nx) and \
+                    (allow_door or not self._is_ghost_door(ny, nx)):
+                best_dir = reverse
 
         if best_dir:
             ghost['dir'] = best_dir
@@ -2345,6 +2491,11 @@ class PacManGame(Game):
             self.won = True
             return
 
+        # Check after pac moves so walking into a ghost (or swapping cells with
+        # one on the same frame) is not missed.
+        if self._ghost_collision():
+            return
+
         if self.frightened:
             self.frightened_timer -= 1
             if self.frightened_timer <= 0:
@@ -2353,10 +2504,14 @@ class PacManGame(Game):
         if self.frame % self.ghost_speed == 0:
             for ghost in self.ghosts:
                 self._move_ghost(ghost)
+            if self._ghost_collision():
+                return
 
         if self.frame % 150 == 0 and self.ghost_speed > 1:
             self.ghost_speed = max(1, self.ghost_speed - 1)
 
+    def _ghost_collision(self):
+        """Resolve pac/ghost overlap. Returns True on a fatal (dying) hit."""
         for ghost in self.ghosts:
             if ghost['eaten']:
                 continue
@@ -2366,7 +2521,8 @@ class PacManGame(Game):
                     self.score += 200
                 else:
                     self._dying = 20
-                    return
+                    return True
+        return False
 
     def draw(self):
         maze_rows = self._maze_rows()
@@ -2432,11 +2588,560 @@ class PacManGame(Game):
                 'dots_left': self.dots_left, 'dying': self._dying}
 
 
+# ─── Sokoban ─────────────────────────────────────────────────────────────────
+
+class SokobanGame(Game):
+    name = "sokoban"
+    min_h = 16
+    min_w = 30
+    # '#' wall, '.' target, '$' box, '*' box-on-target, '@' player, '+' player-on-target
+    _LEVELS = [
+        ["#####",
+         "#@$.#",
+         "#####"],
+        ["#####",
+         "#@  #",
+         "#$  #",
+         "#.  #",
+         "#####"],
+        ["######",
+         "#@ $.#",
+         "# $ .#",
+         "######"],
+        ["#######",
+         "#  .  #",
+         "# #$# #",
+         "#.$@$.#",
+         "# #$# #",
+         "#  .  #",
+         "#######"],
+    ]
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.level_idx = saved['level']
+            self._parse_level(self.level_idx)
+            self.boxes = {tuple(b) for b in saved['boxes']}
+            self.py, self.px = saved['py'], saved['px']
+            self.moves = saved['moves']
+            self.pushes = saved['pushes']
+            self.score = saved['score']
+            self.history = []
+            return
+        self.level_idx = 0
+        self.moves = 0
+        self.pushes = 0
+        self.score = 0
+        self._start_level(self.level_idx)
+
+    def _parse_level(self, idx):
+        rows = self._LEVELS[idx]
+        self.rows = len(rows)
+        self.cols = max(len(r) for r in rows)
+        self.walls = set()
+        self.targets = set()
+        self._init_boxes = set()
+        self._init_player = (1, 1)
+        for r, line in enumerate(rows):
+            for c, ch in enumerate(line):
+                if ch == '#':
+                    self.walls.add((r, c))
+                elif ch in '.+*':
+                    self.targets.add((r, c))
+                if ch in '$*':
+                    self._init_boxes.add((r, c))
+                if ch in '@+':
+                    self._init_player = (r, c)
+        self.min_w = max(30, self.cols + 4)
+        self.min_h = max(16, self.rows + 6)
+
+    def _start_level(self, idx):
+        self._parse_level(idx)
+        self.boxes = set(self._init_boxes)
+        self.py, self.px = self._init_player
+        self.history = []
+
+    def get_timeout(self):
+        return -1  # turn-based: block until a key is pressed
+
+    def _move(self, dy, dx):
+        ny, nx = self.py + dy, self.px + dx
+        if (ny, nx) in self.walls:
+            return
+        if (ny, nx) in self.boxes:
+            by, bx = ny + dy, nx + dx
+            if (by, bx) in self.walls or (by, bx) in self.boxes:
+                return
+            self.history.append((self.py, self.px, set(self.boxes), True))
+            self.boxes.discard((ny, nx))
+            self.boxes.add((by, bx))
+            self.py, self.px = ny, nx
+            self.moves += 1
+            self.pushes += 1
+        else:
+            self.history.append((self.py, self.px, set(self.boxes), False))
+            self.py, self.px = ny, nx
+            self.moves += 1
+
+    def handle_input(self, key):
+        if key in (curses.KEY_UP, ord('w')):
+            self._move(-1, 0)
+        elif key in (curses.KEY_DOWN, ord('s')):
+            self._move(1, 0)
+        elif key in (curses.KEY_LEFT, ord('a')):
+            self._move(0, -1)
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self._move(0, 1)
+        elif key in (ord('u'), ord('z')):
+            if self.history:
+                self.py, self.px, self.boxes, was_push = self.history.pop()
+                self.moves = max(0, self.moves - 1)
+                if was_push:
+                    self.pushes = max(0, self.pushes - 1)
+        elif key in (ord('r'), ord('R')):
+            self._start_level(self.level_idx)
+
+    def update(self):
+        if self.game_over:
+            return
+        if self.boxes == self.targets:
+            self.score += 1  # one point per solved level
+            if self.level_idx + 1 < len(self._LEVELS):
+                self.level_idx += 1
+                self._start_level(self.level_idx)
+            else:
+                self.won = True
+                self.game_over = True
+
+    def draw(self):
+        off_y = max(1, (self.h - self.rows - 3) // 2)
+        off_x = max(0, (self.w - self.cols) // 2)
+        header = (f' SOKOBAN  Level {self.level_idx + 1}/{len(self._LEVELS)}'
+                  f'  Moves:{self.moves}  Pushes:{self.pushes} ')
+        self.safe_addstr(off_y - 1, max(0, (self.w - len(header)) // 2),
+                         header, curses.A_BOLD)
+        for r in range(self.rows):
+            for c in range(self.cols):
+                cell = (r, c)
+                if cell in self.walls:
+                    ch, attr = '#', curses.color_pair(6) | curses.A_BOLD
+                elif cell == (self.py, self.px):
+                    ch = '+' if cell in self.targets else '@'
+                    attr = curses.color_pair(4) | curses.A_BOLD
+                elif cell in self.boxes:
+                    on = cell in self.targets
+                    ch = '*' if on else '$'
+                    attr = curses.color_pair(1 if on else 2) | curses.A_BOLD
+                elif cell in self.targets:
+                    ch, attr = '.', curses.color_pair(3) | curses.A_BOLD
+                else:
+                    ch, attr = ' ', 0
+                self.safe_addstr(off_y + r, off_x + c, ch, attr)
+        hint = 'WASD:Move  U:Undo  R:Reset  ?:Help  ESC:Quit'
+        self.safe_addstr(off_y + self.rows + 1,
+                         max(0, (self.w - len(hint)) // 2), hint,
+                         curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD/Arrows', 'Push boxes'), ('U / Z', 'Undo move'),
+                ('R', 'Reset level'), ('ESC', 'Quit / save')]
+
+    def get_stats(self):
+        return [('Levels solved', self.score),
+                ('Moves', self.moves), ('Pushes', self.pushes)]
+
+    def get_save_data(self):
+        return {'level': self.level_idx, 'boxes': [list(b) for b in self.boxes],
+                'py': self.py, 'px': self.px, 'moves': self.moves,
+                'pushes': self.pushes, 'score': self.score}
+
+
+# ─── Reversi / Othello ───────────────────────────────────────────────────────
+
+class ReversiGame(Game):
+    name = "reversi"
+    min_h = 20
+    min_w = 34
+    supports_difficulty = False
+    N = 8
+    _DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    _WEIGHTS = [
+        [120, -20,  20,   5,   5,  20, -20, 120],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [  5,  -5,   3,   3,   3,   3,  -5,   5],
+        [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+        [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+        [120, -20,  20,   5,   5,  20, -20, 120],
+    ]
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.board = saved['board']
+            self.cur_r = saved['cur_r']
+            self.cur_c = saved['cur_c']
+            self.turn = saved['turn']
+            self.score = saved['score']
+            self.message = saved.get('message', '')
+            return
+        n = self.N
+        self.board = [[0] * n for _ in range(n)]
+        m = n // 2
+        self.board[m - 1][m - 1] = self.board[m][m] = 2   # white = AI
+        self.board[m - 1][m] = self.board[m][m - 1] = 1   # black = player
+        self.cur_r = self.cur_c = m
+        self.turn = 1
+        self.score = 2
+        self.message = 'Your move (black)'
+
+    def get_timeout(self):
+        return -1
+
+    def _flips(self, board, r, c, player):
+        if board[r][c] != 0:
+            return []
+        opp = 3 - player
+        out = []
+        for dy, dx in self._DIRS:
+            line, y, x = [], r + dy, c + dx
+            while 0 <= y < self.N and 0 <= x < self.N and board[y][x] == opp:
+                line.append((y, x)); y += dy; x += dx
+            if line and 0 <= y < self.N and 0 <= x < self.N and board[y][x] == player:
+                out.extend(line)
+        return out
+
+    def _valid_moves(self, board, player):
+        moves = {}
+        for r in range(self.N):
+            for c in range(self.N):
+                if board[r][c] == 0:
+                    f = self._flips(board, r, c, player)
+                    if f:
+                        moves[(r, c)] = f
+        return moves
+
+    def _apply(self, board, r, c, player, flips):
+        board[r][c] = player
+        for (y, x) in flips:
+            board[y][x] = player
+
+    def _counts(self):
+        b = sum(row.count(1) for row in self.board)
+        w = sum(row.count(2) for row in self.board)
+        return b, w
+
+    def _ai_move(self, valid):
+        best, best_score = [], -10 ** 9
+        for (r, c), flips in valid.items():
+            s = self._WEIGHTS[r][c] + len(flips)
+            if s > best_score:
+                best_score, best = s, [(r, c)]
+            elif s == best_score:
+                best.append((r, c))
+        return random.choice(best)
+
+    def _finish(self):
+        b, w = self._counts()
+        self.score = b
+        self.won = b > w
+        self.game_over = True
+        self.message = ('You win!' if b > w else
+                        'Draw' if b == w else 'AI wins')
+
+    def handle_input(self, key):
+        if key in (curses.KEY_UP, ord('w')):
+            self.cur_r = (self.cur_r - 1) % self.N
+        elif key in (curses.KEY_DOWN, ord('s')):
+            self.cur_r = (self.cur_r + 1) % self.N
+        elif key in (curses.KEY_LEFT, ord('a')):
+            self.cur_c = (self.cur_c - 1) % self.N
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self.cur_c = (self.cur_c + 1) % self.N
+        elif key in (curses.KEY_ENTER, ord(' '), 10, 13):
+            if self.turn == 1:
+                valid = self._valid_moves(self.board, 1)
+                if (self.cur_r, self.cur_c) in valid:
+                    self._apply(self.board, self.cur_r, self.cur_c, 1,
+                                valid[(self.cur_r, self.cur_c)])
+                    self.turn = 2
+
+    def update(self):
+        if self.game_over:
+            return
+        # Resolve turns/passes until it is the player's move (with a legal
+        # option) or neither side can move. The bound safely exceeds the most
+        # AI moves/passes possible in one call (one disc placed per cell).
+        for _ in range(self.N * self.N + 4):
+            pv = self._valid_moves(self.board, 1)
+            av = self._valid_moves(self.board, 2)
+            b, _w = self._counts()
+            self.score = b
+            if not pv and not av:
+                self._finish()
+                return
+            if self.turn == 1:
+                if pv:
+                    self.message = 'Your move (black)'
+                    return
+                self.message = 'No move - you pass'
+                self.turn = 2
+            else:
+                if av:
+                    r, c = self._ai_move(av)
+                    self._apply(self.board, r, c, 2, av[(r, c)])
+                    self.message = f'AI played {chr(65 + c)}{r + 1}'
+                    self.turn = 1
+                else:
+                    self.message = 'AI passes'
+                    self.turn = 1
+
+    def draw(self):
+        b, w = self._counts()
+        gw = self.N * 2 + 3
+        sx = max(0, (self.w - gw) // 2)
+        sy = max(1, (self.h - self.N - 4) // 2)
+        self.safe_addstr(sy - 1, sx, ' REVERSI ', curses.A_BOLD | curses.A_REVERSE)
+        score = f'You(X):{b}   AI(O):{w}'
+        self.safe_addstr(sy - 1, sx + gw - len(score), score,
+                         curses.color_pair(3) | curses.A_BOLD)
+        self.safe_addstr(sy, sx + 3,
+                         ' '.join(chr(65 + c) for c in range(self.N)),
+                         curses.color_pair(4))
+        valid = self._valid_moves(self.board, 1) if self.turn == 1 else {}
+        for r in range(self.N):
+            self.safe_addstr(sy + 1 + r, sx, f'{r + 1:>2}', curses.color_pair(4))
+            for c in range(self.N):
+                v = self.board[r][c]
+                is_cur = (r == self.cur_r and c == self.cur_c)
+                hi = curses.A_REVERSE if is_cur else 0
+                if v == 1:
+                    ch, attr = 'X', curses.color_pair(1) | curses.A_BOLD | hi
+                elif v == 2:
+                    ch, attr = 'O', curses.color_pair(2) | curses.A_BOLD | hi
+                elif (r, c) in valid:
+                    ch, attr = '*', curses.color_pair(3) | hi
+                else:
+                    ch, attr = '.', curses.color_pair(6) | hi
+                self.safe_addstr(sy + 1 + r, sx + 3 + c * 2, ch, attr)
+        self.safe_addstr(sy + self.N + 1, sx, self.message[:gw + 6],
+                         curses.color_pair(3))
+        hint = 'WASD:Move  Space:Place  ?:Help  ESC:Quit'
+        self.safe_addstr(sy + self.N + 2, sx, hint, curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD/Arrows', 'Move cursor'), ('Space/Enter', 'Place disc'),
+                ('ESC', 'Quit / save')]
+
+    def get_stats(self):
+        b, w = self._counts()
+        return [('You (X)', b), ('AI (O)', w)]
+
+    def get_save_data(self):
+        return {'board': self.board, 'cur_r': self.cur_r, 'cur_c': self.cur_c,
+                'turn': self.turn, 'score': self.score, 'message': self.message}
+
+
+# ─── Frogger ─────────────────────────────────────────────────────────────────
+
+class FroggerGame(Game):
+    name = "frogger"
+    min_h = 20
+    min_w = 44
+    FIELD_W = 40
+    # (type, direction, speed cells/frame) from top row to bottom row.
+    _LANES = [
+        ('home',  0, 0.0),
+        ('river', 1, 0.60),
+        ('river', -1, 0.45),
+        ('river', 1, 0.30),
+        ('safe',  0, 0.0),
+        ('road', -1, 0.55),
+        ('road', 1, 0.40),
+        ('road', -1, 0.30),
+        ('safe',  0, 0.0),
+    ]
+    _HOME_BAYS = [4, 14, 24, 34]
+
+    def setup(self):
+        saved = self._load_save(self.name)
+        if saved:
+            self.frog_row = saved['frog_row']
+            self.frog_x = saved['frog_x']
+            self.lanes = saved['lanes']
+            self.lives = saved['lives']
+            self.score = saved['score']
+            self.homes = saved['homes']
+            self.frame = saved['frame']
+            self.best_row = saved['best_row']
+            return
+        self._new_game()
+
+    def _new_game(self):
+        self.frame = 0
+        self.lives = 3
+        self.score = 0
+        self.homes = [False] * len(self._HOME_BAYS)
+        self.lanes = []
+        for typ, _d, _spd in self._LANES:
+            ents = []
+            if typ in ('road', 'river'):
+                gap = 9 if typ == 'river' else 8
+                x = 0
+                while x < self.FIELD_W:
+                    ents.append(float(x))
+                    x += gap
+            self.lanes.append({'ents': ents})
+        self._reset_frog()
+
+    def _reset_frog(self):
+        self.frog_row = len(self._LANES) - 1
+        self.frog_x = float(self.FIELD_W // 2)
+        self.best_row = self.frog_row
+
+    def get_timeout(self):
+        return 90
+
+    def _ent_width(self, typ):
+        return 5 if typ == 'river' else 3
+
+    def _covers(self, ent, width, col):
+        s = int(ent) % self.FIELD_W
+        return any((s + k) % self.FIELD_W == col for k in range(width))
+
+    def handle_input(self, key):
+        if key in (curses.KEY_UP, ord('w')):
+            self.frog_row = max(0, self.frog_row - 1)
+            if self.frog_row < self.best_row:
+                self.best_row = self.frog_row
+                self.score += 10
+        elif key in (curses.KEY_DOWN, ord('s')):
+            self.frog_row = min(len(self._LANES) - 1, self.frog_row + 1)
+        elif key in (curses.KEY_LEFT, ord('a')):
+            self.frog_x = max(0.0, self.frog_x - 1)
+        elif key in (curses.KEY_RIGHT, ord('d')):
+            self.frog_x = min(self.FIELD_W - 1.0, self.frog_x + 1)
+
+    def _die(self):
+        self.lives -= 1
+        if self.lives <= 0:
+            self.game_over = True
+        else:
+            self._reset_frog()
+
+    def _reach_home(self):
+        col = int(round(self.frog_x))
+        bay = min(range(len(self._HOME_BAYS)),
+                  key=lambda i: abs(self._HOME_BAYS[i] - col))
+        if abs(self._HOME_BAYS[bay] - col) > 2 or self.homes[bay]:
+            self._die()          # missed a bay or landed on a filled one
+            return
+        self.homes[bay] = True
+        self.score += 50
+        if all(self.homes):
+            self.score += 200
+            self.won = True
+            self.game_over = True
+        else:
+            self._reset_frog()
+
+    def update(self):
+        if self.game_over:
+            return
+        self.frame += 1
+        row = self.frog_row
+        typ, d, spd = self._LANES[row]
+        # Decide river contact from the FRAME-START positions (before logs move)
+        # in continuous space, so a frog that starts on a log rides with it
+        # instead of slipping off its back edge; it only drowns if it hopped
+        # into open water or is carried off-screen.
+        on_log = False
+        if typ == 'river':
+            width = self._ent_width('river')
+            on_log = any(0 <= (self.frog_x - e) % self.FIELD_W < width
+                         for e in self.lanes[row]['ents'])
+        # Advance all traffic.
+        for i, (t, dd, ss) in enumerate(self._LANES):
+            if t in ('road', 'river'):
+                self.lanes[i]['ents'] = [(e + dd * ss) % self.FIELD_W
+                                         for e in self.lanes[i]['ents']]
+        if typ == 'home':
+            self._reach_home()
+        elif typ == 'river':
+            if not on_log:
+                self._die()
+                return
+            self.frog_x += d * spd  # carried by the log, in lockstep
+            if self.frog_x < 0 or self.frog_x > self.FIELD_W - 1:
+                self._die()
+        elif typ == 'road':
+            # Cars move onto a stationary frog, so check AFTER they advance.
+            col = int(round(self.frog_x))
+            if any(self._covers(e, self._ent_width('road'), col)
+                   for e in self.lanes[row]['ents']):
+                self._die()
+
+    def draw(self):
+        fw = self.FIELD_W
+        sx = max(0, (self.w - fw) // 2)
+        sy = max(1, (self.h - len(self._LANES) - 3) // 2)
+        header = f' FROGGER  Score:{self.score}  Lives:{"@" * self.lives} '
+        self.safe_addstr(sy - 1, max(0, (self.w - len(header)) // 2),
+                         header, curses.A_BOLD)
+        for i, (typ, d, spd) in enumerate(self._LANES):
+            y = sy + i
+            if typ == 'home':
+                self.safe_addstr(y, sx, '^' * fw, curses.color_pair(1))
+                for bi, bx in enumerate(self._HOME_BAYS):
+                    ch = 'O' if self.homes[bi] else '_'
+                    self.safe_addstr(y, sx + bx, ch,
+                                     curses.color_pair(1) | curses.A_BOLD)
+            elif typ == 'safe':
+                self.safe_addstr(y, sx, '-' * fw, curses.color_pair(4))
+            elif typ == 'river':
+                self.safe_addstr(y, sx, '~' * fw, curses.color_pair(6))
+                for e in self.lanes[i]['ents']:
+                    for k in range(self._ent_width('river')):
+                        cx = (int(e) + k) % fw
+                        self.safe_addstr(y, sx + cx, '#',
+                                         curses.color_pair(3) | curses.A_BOLD)
+            else:  # road
+                for e in self.lanes[i]['ents']:
+                    for k in range(self._ent_width('road')):
+                        cx = (int(e) + k) % fw
+                        ch = '[' if k == 0 else (']' if k == 2 else 'o')
+                        self.safe_addstr(y, sx + cx, ch,
+                                         curses.color_pair(2) | curses.A_BOLD)
+        fy = sy + self.frog_row
+        self.safe_addstr(fy, sx + int(round(self.frog_x)), '@',
+                         curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE)
+        hint = 'WASD/Arrows:Hop  P:Pause  ?:Help  ESC:Quit'
+        self.safe_addstr(sy + len(self._LANES) + 1,
+                         max(0, (self.w - len(hint)) // 2), hint,
+                         curses.color_pair(4))
+
+    def get_controls(self):
+        return [('WASD/Arrows', 'Hop'), ('P', 'Pause'), ('ESC', 'Quit / save')]
+
+    def get_stats(self):
+        return [('Homes filled', f'{sum(self.homes)}/{len(self.homes)}'),
+                ('Lives left', self.lives)]
+
+    def get_save_data(self):
+        return {'frog_row': self.frog_row, 'frog_x': self.frog_x,
+                'lanes': self.lanes, 'lives': self.lives, 'score': self.score,
+                'homes': self.homes, 'frame': self.frame,
+                'best_row': self.best_row}
+
+
 # ─── Menu ────────────────────────────────────────────────────────────────────
 
 _ICONS = {'snake': '~o~', 'tetris': '[#]', '2048': ' 2K', 'dino': '/^\\',
           'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|',
-          'flappy': '>>=', 'minesweeper_i': '[*]', 'pacman': 'C.M'}
+          'flappy': '>>=', 'minesweeper_i': '[*]', 'pacman': 'C.M',
+          'sokoban': '[$]', 'reversi': 'XO ', 'frogger': '@^^'}
 
 _GAMES = [
     ("Snake",         "Classic snake - eat food, grow longer",     SnakeGame),
@@ -2449,6 +3154,9 @@ _GAMES = [
     ("Flappy Bird",   "Flap through pipes, don't crash",          FlappyGame),
     ("Minesweeper",   "Uncover cells, avoid mines",               MinesweeperGame),
     ("Pac-Man",       "Eat dots, avoid ghosts",                   PacManGame),
+    ("Sokoban",       "Push every box onto a target",             SokobanGame),
+    ("Reversi",       "Outflank the AI on an 8x8 board",          ReversiGame),
+    ("Frogger",       "Hop across road and river to the bays",    FroggerGame),
 ]
 
 _TITLE = [
@@ -2463,7 +3171,10 @@ _GAME_MAP.update({'dino': DinoGame, '2048': Game2048,
                   'pong': PongGame, 'flappy': FlappyGame,
                   'bird': FlappyGame, 'mines': MinesweeperGame,
                   'sweep': MinesweeperGame, 'pacman': PacManGame,
-                  'pac': PacManGame})
+                  'pac': PacManGame, 'sokoban': SokobanGame,
+                  'boxes': SokobanGame, 'reversi': ReversiGame,
+                  'othello': ReversiGame, 'frogger': FroggerGame,
+                  'frog': FroggerGame})
 
 
 def _safe(stdscr, y, x, text, attr=0):
@@ -2476,26 +3187,37 @@ def _safe(stdscr, y, x, text, attr=0):
 
 
 def _run_game(stdscr, cls):
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    _load_theme()  # honor saved theme even on direct `play <game>` launch
     init_colors()
     difficulty = None
     while True:
         game = cls(stdscr)
         if game.supports_difficulty:
-            if difficulty is None and not Game.has_save(game.name):
+            # has_save() returns the saved score (possibly 0) or None; only
+            # skip the difficulty picker when a save actually exists.
+            if difficulty is None and Game.has_save(game.name) is None:
                 difficulty = Game._select_difficulty(stdscr)
             if difficulty:
                 game.difficulty = difficulty
         result = game.run()
+        stdscr.nodelay(False)  # restore blocking input for the menu
         if result != 'retry':
             break
 
 
 def _menu(stdscr):
-    curses.curs_set(0)
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
     _load_theme()
     init_colors()
     sel = 0
+    scroll = 0
     stdscr.clear()
     while True:
         stdscr.erase()
@@ -2518,10 +3240,18 @@ def _menu(stdscr):
 
         ly = ty + len(_TITLE) + 2
         bx = max(0, (w - 42) // 2)
-        for i, (name, desc, cls) in enumerate(_GAMES):
-            y = ly + i * 2
-            if y + 1 >= h - 2:
-                break
+        # Scroll a window of games so the highlighted row is always drawn, even
+        # when the full 13-game list is taller than the terminal.
+        visible = max(1, (h - 3 - ly) // 2)
+        if sel < scroll:
+            scroll = sel
+        elif sel >= scroll + visible:
+            scroll = sel - visible + 1
+        scroll = max(0, min(scroll, max(0, len(_GAMES) - visible)))
+        end = min(len(_GAMES), scroll + visible)
+        for i in range(scroll, end):
+            name, desc, cls = _GAMES[i]
+            y = ly + (i - scroll) * 2
             hi = load_high_score(cls.name)
             icon = _ICONS.get(cls.name, '   ')
             if i == sel:
@@ -2541,8 +3271,13 @@ def _menu(stdscr):
                 _safe(stdscr, y, bx + 22, f'[Best: {hi}]',
                       curses.color_pair(3))
             _safe(stdscr, y + 1, bx + 7, desc[:38], curses.color_pair(4))
+        if scroll > 0:
+            _safe(stdscr, ly - 1, bx + 7, '^ more', curses.color_pair(3))
+        if end < len(_GAMES):
+            _safe(stdscr, ly + (end - scroll) * 2, bx + 7, 'v more',
+                  curses.color_pair(3))
 
-        cy = min(h - 2, ly + len(_GAMES) * 2 + 1)
+        cy = min(h - 2, ly + visible * 2 + 1)
         ctrl = "Up/Down: Select  Enter: Play  T: Theme  ?: Help  Q: Quit"
         _safe(stdscr, cy, max(0, (w - len(ctrl)) // 2), ctrl,
               curses.color_pair(7))
@@ -2600,11 +3335,15 @@ def _cli_snake_move(s, action):
     if nh[0] <= 0 or nh[0] >= s['h'] - 1 or nh[1] <= 0 or nh[1] >= s['w'] - 1:
         s['over'] = True
         return s
-    if nh in s['snake']:
+    grow = (nh == s['food'])
+    # The tail moves out of its cell unless we eat, so following the tail is
+    # legal: exclude the last segment when not growing.
+    body = s['snake'] if grow else s['snake'][:-1]
+    if nh in body:
         s['over'] = True
         return s
     s['snake'].insert(0, nh)
-    if nh == s['food']:
+    if grow:
         s['score'] += 1
         s['food'] = _cli_place_food(s['h'], s['w'], s['snake'])
     else:
@@ -2745,25 +3484,35 @@ def _cli_2048_render(s):
 
 # ─── CLI: Minesweeper ────────────────────────────────────────────────────────
 
-def _cli_ms_init(size=9, num_mines=10):
-    cells = [(r, c) for r in range(size) for c in range(size)]
-    mines = set(random.sample(cells, min(num_mines, len(cells) - 1)))
+def _cli_ms_place_mines(s, safe_r, safe_c):
+    """Place mines after the first reveal, keeping that cell and its neighbors
+    mine-free so the first click is always safe (matches the interactive game)."""
+    size = s['size']
+    forbidden = {(safe_r + dr, safe_c + dc)
+                 for dr in (-1, 0, 1) for dc in (-1, 0, 1)}
+    cells = [(r, c) for r in range(size) for c in range(size)
+             if (r, c) not in forbidden]
+    mines = set(random.sample(cells, min(s['num_mines'], len(cells))))
     nums = [[0] * size for _ in range(size)]
     for r in range(size):
         for c in range(size):
             if (r, c) in mines:
                 nums[r][c] = -1
                 continue
-            cnt = 0
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < size and 0 <= nc < size and (nr, nc) in mines:
-                        cnt += 1
-            nums[r][c] = cnt
-    return {'game': 'minesweeper', 'size': size,
-            'mines': [list(m) for m in mines], 'nums': nums,
-            'revealed': [], 'flagged': [],
+            nums[r][c] = sum(
+                1 for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                if 0 <= r + dr < size and 0 <= c + dc < size
+                and (r + dr, c + dc) in mines)
+    s['mines'] = [list(m) for m in mines]
+    s['nums'] = nums
+    s['placed'] = True
+
+
+def _cli_ms_init(size=9, num_mines=10):
+    # Mines are placed lazily on the first reveal so it is always safe.
+    return {'game': 'minesweeper', 'size': size, 'num_mines': num_mines,
+            'mines': [], 'nums': [[0] * size for _ in range(size)],
+            'placed': False, 'revealed': [], 'flagged': [],
             'over': False, 'won': False, 'score': 0}
 
 
@@ -2793,22 +3542,26 @@ def _cli_ms_move(s, action):
     elif parts[0] == 'reveal':
         if (r, c) in flagged or (r, c) in revealed:
             pass
-        elif (r, c) in mines_set:
-            s['over'] = True
-            revealed |= mines_set
         else:
-            stack = [(r, c)]
-            while stack:
-                cr, cc = stack.pop()
-                if (cr, cc) in revealed:
-                    continue
-                revealed.add((cr, cc))
-                if s['nums'][cr][cc] == 0:
-                    for dr in (-1, 0, 1):
-                        for dc in (-1, 0, 1):
-                            nr, nc = cr + dr, cc + dc
-                            if 0 <= nr < sz and 0 <= nc < sz and (nr, nc) not in revealed:
-                                stack.append((nr, nc))
+            if not s.get('placed', len(s.get('mines', [])) > 0):
+                _cli_ms_place_mines(s, r, c)
+                mines_set = {tuple(m) for m in s['mines']}
+            if (r, c) in mines_set:
+                s['over'] = True
+                revealed |= mines_set
+            else:
+                stack = [(r, c)]
+                while stack:
+                    cr, cc = stack.pop()
+                    if (cr, cc) in revealed or (cr, cc) in flagged:
+                        continue  # never auto-reveal a flagged cell
+                    revealed.add((cr, cc))
+                    if s['nums'][cr][cc] == 0:
+                        for dr in (-1, 0, 1):
+                            for dc in (-1, 0, 1):
+                                nr, nc = cr + dr, cc + dc
+                                if 0 <= nr < sz and 0 <= nc < sz and (nr, nc) not in revealed:
+                                    stack.append((nr, nc))
 
     s['revealed'] = [list(p) for p in revealed]
     s['flagged'] = [list(p) for p in flagged]
@@ -2827,7 +3580,8 @@ def _cli_ms_render(s):
     mines_set = {tuple(m) for m in s['mines']}
     revealed = {tuple(p) for p in s['revealed']}
     flagged = {tuple(p) for p in s['flagged']}
-    lines = [f"MINESWEEPER   Mines left: ~{len(mines_set) - len(flagged)}"]
+    total_mines = s.get('num_mines', len(mines_set))
+    lines = [f"MINESWEEPER   Mines left: ~{total_mines - len(flagged)}"]
     hdr = '     ' + ''.join(f'{c + 1:>3}' for c in range(sz))
     lines.append(hdr)
     lines.append('    ┌' + '───' * sz + '┐')
@@ -3126,7 +3880,17 @@ def _cli_mode(args):
 # ─── Entry Point ─────────────────────────────────────────────────────────────
 
 def main():
-    locale.setlocale(locale.LC_ALL, '')
+    # Ensure box-drawing / unicode output doesn't crash on a legacy console
+    # (e.g. Windows cp1252). errors='replace' keeps text commands alive.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError):
+            pass
+    try:
+        locale.setlocale(locale.LC_ALL, '')
+    except (locale.Error, ValueError):
+        pass
     args = sys.argv[1:]
 
     if not args:
@@ -3144,8 +3908,9 @@ def main():
             _cli_mode([_shortcuts[cmd]])
             return
 
-    # Connect4 column shortcut: play 3 (drops in column 3)
-    if cmd.isdigit():
+    # Connect4 column shortcut: play 3 (drops in column 3). Exclude real game
+    # names like "2048" so `play 2048` still launches the interactive game.
+    if cmd.isdigit() and cmd not in _GAME_MAP:
         state = _load_game_state()
         if state and state.get('game') == 'connect4' and not state.get('over'):
             _cli_mode([cmd])
@@ -3179,7 +3944,7 @@ def main():
             print(f'  {name:<14} {desc}{hs}')
     elif cmd in _GAME_MAP:
         cls = _GAME_MAP[cmd]
-        _curses_wrapper(lambda s, c=cls: (init_colors(), _run_game(s, c)), cmd)
+        _curses_wrapper(lambda s, c=cls: _run_game(s, c), cmd)
     else:
         print(f'Unknown game: {cmd}')
         print('Available: ' + ', '.join(n for n, _, _ in _GAMES))
