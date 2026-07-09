@@ -311,6 +311,20 @@ def test_dino_clears_cactus_on_landing():
     assert not g.game_over
 
 
+def test_dino_cactus_at_snout_collides():
+    """Regression: a cactus meeting the dino's nose collides, not clips through."""
+    g = play.DinoGame(MockScreen(24, 80))
+    g.setup()
+    g.on_ground = True
+    g.dino_y = 0.0
+    g.velocity = 0.0
+    g.score = 0
+    g.spawn_timer = 999
+    g.obstacles = [{'x': 11.5, 'art': play._CACTUS_SM}]  # trunk ends at the snout col
+    g.update()
+    assert g.game_over
+
+
 def test_dino_grounded_fast_obstacle_still_blocks_tunnel():
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()

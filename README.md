@@ -26,6 +26,13 @@ One command. No setup. Runs on Linux, macOS, WSL, and Windows.
 
 <br>
 
+> **The hardest part of vibe coding is the waiting.** Your agents are off doing
+> their thing, you have nothing to do, and the office laptop is locked down.
+> So run a game in the terminal you already have open, and pull in a coworker
+> over the LAN.
+
+<br>
+
 ## Quick start
 
 ```bash

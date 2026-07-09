@@ -43,7 +43,7 @@ Linux/macOS; on Windows `pip install terminal-games` also pulls in windows-curse
 The turn-based `play cli ...` games and text commands work with no curses at all.
 """
 
-__version__ = '2.6.0'
+__version__ = '2.6.1'
 
 try:
     import curses
@@ -447,8 +447,8 @@ class Game:
                     self._auto_save()
                 self.stdscr.nodelay(False)
                 return 'quit'
-            if key == ord('p') and not self.game_over:
-                self.paused = not self.paused
+            if key == ord('p') and not self.game_over and not getattr(self, 'net', None):
+                self.paused = not self.paused  # no pausing a live network game
             elif key == ord('?') or key == ord('H'):
                 self._show_help = not self._show_help
             elif key != -1 and self._show_help:
@@ -1102,7 +1102,10 @@ class DinoGame(Game):
         gy = self.ground_y
         db = gy + int(self.dino_y)
         dt = db - 2
-        dl, dr = self.dino_x + 1, self.dino_x + 2  # tighter dino hitbox
+        # Hitbox spans the dino's body and snout (cols +1..+3 of the 4-wide
+        # sprite), so a cactus meeting the nose actually collides instead of
+        # visibly clipping through it. The tail column (+0) stays forgiving.
+        dl, dr = self.dino_x + 1, self.dino_x + 3
         # Only sweep the columns an obstacle crossed this tick when the dino was
         # on the ground the WHOLE tick - that is the case a fast obstacle could
         # tunnel through the narrow hitbox. While the dino is airborne/landing,
@@ -1291,7 +1294,7 @@ class BreakoutGame(Game):
         # Paddle bounce
         if (int(ny) >= self.paddle_y - 1 and int(ny) <= self.paddle_y
                 and self.ball_dy > 0
-                and self.paddle_x - 1 <= int(nx) <= self.paddle_x + self.paddle_w):
+                and self.paddle_x <= int(nx) <= self.paddle_x + self.paddle_w - 1):
             self.ball_dy = -abs(self.ball_dy)
             hit = (nx - self.paddle_x) / self.paddle_w
             self.ball_dx = (hit - 0.5) * 2.0
@@ -1588,7 +1591,7 @@ class ShooterGame(Game):
         # Enemies collide with player
         for e in self.enemies:
             art_w = len(self._ENEMY_ART[e['type']])
-            if (int(e['y']) >= self.h - 4 and
+            if (int(e['y']) >= self.h - 3 and  # align with the ship's drawn row
                     abs(e['x'] + art_w // 2 - px) <= 2):
                 if self.shield:
                     self.shield = False
@@ -1726,6 +1729,22 @@ class PongGame(Game):
 
     PADDLE_H = 5
     WIN_SCORE = 11
+    # Network games run physics on this fixed logical field (drawn centered in
+    # each player's terminal) so the two screens agree regardless of window size.
+    NET_FIELD_W = 60
+    NET_FIELD_H = 20
+
+    def _pw(self):
+        return self.NET_FIELD_W if self.net else self.w
+
+    def _ph(self):
+        return self.NET_FIELD_H if self.net else self.h
+
+    def _origin(self):
+        if not self.net:
+            return 0, 0
+        return (max(0, (self.h - self.NET_FIELD_H) // 2),
+                max(0, (self.w - self.NET_FIELD_W) // 2))
 
     def setup(self):
         # In a network game the host owns physics (left paddle); the guest sends
@@ -1745,14 +1764,17 @@ class PongGame(Game):
         self.ai_speed = {'easy': 0.5, 'medium': 1.0, 'hard': 1.5}[diff]
         self.ai_error = {'easy': 3.0, 'medium': 1.5, 'hard': 0.5}[diff]
         self.ai_react = {'easy': 8, 'medium': 4, 'hard': 2}[diff]
-        self.player_y = self.h // 2 - self.PADDLE_H // 2
-        self.ai_y = self.h // 2 - self.PADDLE_H // 2
-        self.ai_target = float(self.h // 2)
+        if self.net:  # gate on the fixed field so it always fits both terminals
+            self.min_w, self.min_h = self.NET_FIELD_W, self.NET_FIELD_H
+        pw, ph = self._pw(), self._ph()
+        self.player_y = ph // 2 - self.PADDLE_H // 2
+        self.ai_y = ph // 2 - self.PADDLE_H // 2
+        self.ai_target = float(ph // 2)
         self.player_score = 0
         self.ai_score = 0
         self.score = 0
-        self.ball_x = float(self.w // 2)
-        self.ball_y = float(self.h // 2)
+        self.ball_x = float(pw // 2)
+        self.ball_y = float(ph // 2)
         self.ball_dx = 0.0
         self.ball_dy = 0.0
         self.serving = True
@@ -1788,8 +1810,8 @@ class PongGame(Game):
         }
 
     def _serve(self):
-        self.ball_x = float(self.w // 2)
-        self.ball_y = float(self.h // 2)
+        self.ball_x = float(self._pw() // 2)
+        self.ball_y = float(self._ph() // 2)
         dx = 1.0 if self.server == 'player' else -1.0
         self.ball_dx = dx
         self.ball_dy = random.choice([-0.5, 0.5])
@@ -1797,7 +1819,7 @@ class PongGame(Game):
         self.rally = 0
 
     def handle_input(self, key):
-        top = self.h - self.PADDLE_H - 2
+        top = self._ph() - self.PADDLE_H - 2
         if self.net and self.role == 'guest':
             if key in (ord('w'), curses.KEY_UP):
                 self.ai_y = max(2, self.ai_y - 2)
@@ -1817,13 +1839,22 @@ class PongGame(Game):
                 'psc': self.player_score, 'asc': self.ai_score,
                 'sv': self.serving, 'go': self.game_over}
 
+    @staticmethod
+    def _num(v, default):
+        # Accept only finite numbers from the peer (reject NaN / Infinity / junk).
+        return v if isinstance(v, (int, float)) and v == v \
+            and -1e6 < v < 1e6 else default
+
     def _apply_state(self, m):
-        self.ball_x = m.get('bx', self.ball_x)
-        self.ball_y = m.get('by', self.ball_y)
-        self.player_y = m.get('py', self.player_y)   # host (opponent) paddle
-        self.player_score = m.get('psc', self.player_score)
-        self.ai_score = m.get('asc', self.ai_score)
-        self.serving = m.get('sv', self.serving)
+        pw, ph = self._pw(), self._ph()
+        self.ball_x = max(0.0, min(pw - 1.0, self._num(m.get('bx'), self.ball_x)))
+        self.ball_y = max(0.0, min(ph - 1.0, self._num(m.get('by'), self.ball_y)))
+        self.player_y = int(max(2, min(ph - self.PADDLE_H - 2,
+                                       self._num(m.get('py'), self.player_y))))
+        self.player_score = int(self._num(m.get('psc'), self.player_score))
+        self.ai_score = int(self._num(m.get('asc'), self.ai_score))
+        self.serving = bool(m.get('sv', self.serving))
+        self.score = self.ai_score  # guest is the right paddle; show its score
         # guest keeps its own ai_y (responsive); the host trusts what it receives
         if (m.get('go') or self.player_score >= self.WIN_SCORE
                 or self.ai_score >= self.WIN_SCORE):
@@ -1846,15 +1877,15 @@ class PongGame(Game):
             if latest:
                 self._apply_state(latest)
             return
+        pw, ph = self._pw(), self._ph()
         if self.net and self.role == 'host':
-            top = self.h - self.PADDLE_H - 2
+            top = ph - self.PADDLE_H - 2
             m = self.net.poll()
             while m is not None:
                 if m.get('type') == 'p':
-                    try:
-                        self.ai_y = max(2, min(top, int(m['y'])))
-                    except (KeyError, TypeError, ValueError):
-                        pass
+                    y = self._num(m.get('y'), None)
+                    if y is not None:
+                        self.ai_y = max(2, min(top, int(y)))
                 m = self.net.poll()
         if self.serving:
             if self.net and self.role == 'host':
@@ -1868,23 +1899,23 @@ class PongGame(Game):
         if self.ball_y <= 2:
             self.ball_y = 2.0
             self.ball_dy = abs(self.ball_dy)
-        elif self.ball_y >= self.h - 3:
-            self.ball_y = float(self.h - 3)
+        elif self.ball_y >= ph - 3:
+            self.ball_y = float(ph - 3)
             self.ball_dy = -abs(self.ball_dy)
 
-        # Player paddle (left, x=4)
+        # Player paddle (left, x=4). Collision spans exactly the drawn cells.
         if (self.ball_dx < 0 and 3 <= int(self.ball_x) <= 5 and
-                self.player_y - 1 <= int(self.ball_y) <= self.player_y + self.PADDLE_H):
+                self.player_y <= int(self.ball_y) <= self.player_y + self.PADDLE_H - 1):
             self.ball_dx = abs(self.ball_dx)
             hit = (self.ball_y - self.player_y) / self.PADDLE_H
             self.ball_dy = (hit - 0.5) * 2.0
             self.rally += 1
             self._speed_up()
 
-        # AI paddle (right, x=w-5)
-        ai_x = self.w - 5
+        # Right paddle (x = pw-5)
+        ai_x = pw - 5
         if (self.ball_dx > 0 and ai_x - 1 <= int(self.ball_x) <= ai_x + 1 and
-                self.ai_y - 1 <= int(self.ball_y) <= self.ai_y + self.PADDLE_H):
+                self.ai_y <= int(self.ball_y) <= self.ai_y + self.PADDLE_H - 1):
             self.ball_dx = -abs(self.ball_dx)
             hit = (self.ball_y - self.ai_y) / self.PADDLE_H
             self.ball_dy = (hit - 0.5) * 2.0
@@ -1897,7 +1928,7 @@ class PongGame(Game):
             self.server = 'player'
             self.serving = True
             self._check_win()
-        elif self.ball_x >= self.w - 2:
+        elif self.ball_x >= pw - 2:
             self.player_score += 1
             self.score = self.player_score
             self.server = 'ai'
@@ -1912,14 +1943,14 @@ class PongGame(Game):
                     dist = max(1.0, ai_x - self.ball_x)
                     pred_y = self.ball_y + self.ball_dy * (dist / max(0.1, abs(self.ball_dx)))
                     pred_y += random.uniform(-self.ai_error, self.ai_error)
-                    self.ai_target = max(2.0, min(float(self.h - 3), pred_y))
+                    self.ai_target = max(2.0, min(float(ph - 3), pred_y))
                 else:
-                    self.ai_target = float(self.h // 2)
+                    self.ai_target = float(ph // 2)
             # AI movement
             ai_center = self.ai_y + self.PADDLE_H / 2.0
             if ai_center < self.ai_target - 0.5:
                 move = max(1, round(self.ai_speed * 2))
-                self.ai_y = min(self.h - self.PADDLE_H - 2, self.ai_y + move)
+                self.ai_y = min(ph - self.PADDLE_H - 2, self.ai_y + move)
             elif ai_center > self.ai_target + 0.5:
                 move = max(1, round(self.ai_speed * 2))
                 self.ai_y = max(2, self.ai_y - move)
@@ -1941,53 +1972,54 @@ class PongGame(Game):
             self.game_over = True
 
     def draw(self):
-        # Title
-        self.safe_addstr(0, 2, 'PONG', curses.A_BOLD)
+        oy, ox = self._origin()   # 0,0 solo; centers the fixed field in net mode
+        pw, ph = self._pw(), self._ph()
 
-        # Scores
+        def field_center(y, text, attr):
+            self.safe_addstr(oy + y, ox + max(0, (pw - len(text)) // 2), text, attr)
+
+        self.safe_addstr(oy, ox + 2, 'PONG', curses.A_BOLD)
+
+        # Scores + side labels
         score_s = f'{self.player_score}    {self.ai_score}'
-        self.center_text(1, score_s, curses.A_BOLD)
-        sc_x = max(0, (self.w - len(score_s)) // 2)
+        sc_x = ox + max(0, (pw - len(score_s)) // 2)
+        self.safe_addstr(oy + 1, sc_x, score_s, curses.A_BOLD)
         if not self.net:
             left_lab, right_lab = 'YOU', 'CPU'
         elif self.role == 'host':
             left_lab, right_lab = 'YOU', 'OPP'
         else:
             left_lab, right_lab = 'OPP', 'YOU'
-        self.safe_addstr(1, max(0, sc_x - len(left_lab) - 1), left_lab,
+        self.safe_addstr(oy + 1, max(ox, sc_x - len(left_lab) - 1), left_lab,
                          curses.color_pair(1))
-        self.safe_addstr(1, min(self.w - 3, sc_x + len(score_s) + 1), right_lab,
+        self.safe_addstr(oy + 1, sc_x + len(score_s) + 1, right_lab,
                          curses.color_pair(2))
 
         # Center net
-        mid_x = self.w // 2
-        for y in range(2, self.h - 1):
+        mid_x = ox + pw // 2
+        for y in range(2, ph - 1):
             if y % 2 == 0:
-                self.safe_addstr(y, mid_x, ':', curses.color_pair(4))
+                self.safe_addstr(oy + y, mid_x, ':', curses.color_pair(4))
 
-        # Player paddle (left)
+        # Paddles
         for i in range(self.PADDLE_H):
-            self.safe_addstr(self.player_y + i, 4, '|',
+            self.safe_addstr(oy + self.player_y + i, ox + 4, '|',
                              curses.color_pair(1) | curses.A_BOLD)
-
-        # AI paddle (right)
-        for i in range(self.PADDLE_H):
-            self.safe_addstr(self.ai_y + i, self.w - 5, '|',
+            self.safe_addstr(oy + self.ai_y + i, ox + pw - 5, '|',
                              curses.color_pair(2) | curses.A_BOLD)
 
-        # Ball
+        # Ball / serve prompt
         if not self.serving:
-            self.safe_addstr(int(self.ball_y), int(self.ball_x), 'O',
+            self.safe_addstr(oy + int(self.ball_y), ox + int(self.ball_x), 'O',
                              curses.color_pair(3) | curses.A_BOLD)
         elif self.net and self.role == 'guest':
-            self.center_text(self.h // 2, ' Waiting for host to serve ',
-                             curses.color_pair(4) | curses.A_REVERSE)
+            field_center(ph // 2, ' Waiting for host to serve ',
+                         curses.color_pair(4) | curses.A_REVERSE)
         else:
-            self.center_text(self.h // 2, ' Press SPACE to serve ',
-                             curses.color_pair(4) | curses.A_REVERSE)
+            field_center(ph // 2, ' Press SPACE to serve ',
+                         curses.color_pair(4) | curses.A_REVERSE)
 
-        # Controls
-        self.safe_addstr(self.h - 1, 2,
+        self.safe_addstr(oy + ph - 1, ox + 2,
                          'W/S:Move  Space:Serve  ?:Help',
                          curses.color_pair(4))
 
@@ -2645,10 +2677,6 @@ class PacManGame(Game):
                 elif ch == '-':
                     self.safe_addstr(sy, sx_pos, '-', curses.color_pair(5))
 
-        if self._dying == 0 or (self._dying % 4 < 2):
-            self.safe_addstr(off_y + self.pac_y, off_x + self.pac_x, 'C',
-                             curses.color_pair(3) | curses.A_BOLD)
-
         for ghost in self.ghosts:
             gy, gx = off_y + ghost['y'], off_x + ghost['x']
             if ghost['eaten']:
@@ -2660,6 +2688,11 @@ class PacManGame(Game):
             else:
                 ch, attr = 'M', curses.color_pair(ghost['color']) | curses.A_BOLD
             self.safe_addstr(gy, gx, ch, attr)
+
+        # Pac-Man drawn last so the death blink shows on top of the killer ghost.
+        if self._dying == 0 or (self._dying % 4 < 2):
+            self.safe_addstr(off_y + self.pac_y, off_x + self.pac_x, 'C',
+                             curses.color_pair(3) | curses.A_BOLD)
 
         self.safe_addstr(off_y + maze_rows, max(0, (self.w - 44) // 2),
                          'WASD/Arrows:Move  P:Pause  ?:Help  ESC:Quit',
@@ -3070,15 +3103,17 @@ class ReversiGame(Game):
         b, w = self._counts()
         gw = self.N * 2 + 3
         sx = max(0, (self.w - gw) // 2)
-        sy = max(1, (self.h - self.N - 4) // 2)
-        self.safe_addstr(sy - 1, sx, ' REVERSI ', curses.A_BOLD | curses.A_REVERSE)
+        sy = max(2, (self.h - self.N - 6) // 2)
+        # Title and score on their own rows (the board is too narrow for both).
+        self.safe_addstr(sy - 2, max(0, (self.w - 9) // 2), ' REVERSI ',
+                         curses.A_BOLD | curses.A_REVERSE)
         if self.net:
             xlab = 'You' if self.local_player == 1 else 'Opp'
             olab = 'You' if self.local_player == 2 else 'Opp'
             score = f'{xlab}(X):{b}   {olab}(O):{w}'
         else:
             score = f'You(X):{b}   AI(O):{w}'
-        self.safe_addstr(sy - 1, sx + gw - len(score), score,
+        self.safe_addstr(sy - 1, max(0, (self.w - len(score)) // 2), score,
                          curses.color_pair(3) | curses.A_BOLD)
         self.safe_addstr(sy, sx + 3,
                          ' '.join(chr(65 + c) for c in range(self.N)),
@@ -3229,14 +3264,16 @@ class FroggerGame(Game):
         self.frame += 1
         row = self.frog_row
         typ, d, spd = self._LANES[row]
-        # Decide river contact from the FRAME-START positions (before logs move)
-        # in continuous space, so a frog that starts on a log rides with it
-        # instead of slipping off its back edge; it only drowns if it hopped
-        # into open water or is carried off-screen.
+        # Decide river contact from the FRAME-START positions (before logs move),
+        # using the SAME floored cells the planks are drawn on and the frog's
+        # drawn column, so "on a log" matches exactly what the player sees. A
+        # frog that starts on a log then rides with it (checked pre-move, so it
+        # never slips off the back edge); it only drowns in open water.
         on_log = False
         if typ == 'river':
             width = self._ent_width('river')
-            on_log = any(0 <= (self.frog_x - e) % self.FIELD_W < width
+            col = int(round(self.frog_x))
+            on_log = any(self._covers(e, width, col)
                          for e in self.lanes[row]['ents'])
         # Advance all traffic.
         for i, (t, dd, ss) in enumerate(self._LANES):
@@ -3271,8 +3308,10 @@ class FroggerGame(Game):
             if typ == 'home':
                 self.safe_addstr(y, sx, '^' * fw, curses.color_pair(1))
                 for bi, bx in enumerate(self._HOME_BAYS):
-                    ch = 'O' if self.homes[bi] else '_'
-                    self.safe_addstr(y, sx + bx, ch,
+                    # Draw the bay as wide as its catch zone (bx-2..bx+2) so the
+                    # target the player aims at matches where a landing counts.
+                    slot = '[=O=]' if self.homes[bi] else '[___]'
+                    self.safe_addstr(y, sx + bx - 2, slot,
                                      curses.color_pair(1) | curses.A_BOLD)
             elif typ == 'safe':
                 self.safe_addstr(y, sx, '-' * fw, curses.color_pair(4))
@@ -3333,6 +3372,8 @@ class _NetLink:
             return
         try:
             self.sock.sendall((json.dumps(obj) + '\n').encode('utf-8'))
+        except (BlockingIOError, InterruptedError):
+            pass  # transient back-pressure (peer's buffer full); drop this frame
         except OSError:
             self.alive = False
 
@@ -3415,7 +3456,8 @@ class ConnectFourGame(Game):
         return -1
 
     def _do_move(self, col, player):
-        if not (0 <= col < self.COLS) or self.board[0][col] != 0:
+        if not isinstance(col, int) or not (0 <= col < self.COLS) \
+                or self.board[0][col] != 0:
             return False
         self._drop(col, player)
         if _cli_c4_check_win(self.board, player):
@@ -3455,7 +3497,9 @@ class ConnectFourGame(Game):
             if self.turn == opp:
                 msg = self.net.poll()
                 if msg and msg.get('type') == 'drop':
-                    self._do_move(msg.get('col'), opp)
+                    col = msg.get('col')
+                    if isinstance(col, int) and 0 <= col < self.COLS:
+                        self._do_move(col, opp)
         elif self.turn == opp:  # single-player AI
             col = _cli_c4_ai_move(self.board)
             if col >= 0:
@@ -4268,7 +4312,7 @@ def _cli_c4_is_full(board):
     return all(board[0][c] != 0 for c in range(7))
 
 
-_C4_AI_DEPTH = 6
+_C4_AI_DEPTH = 5  # depth 6 could freeze the UI ~1s; 5 is ~0.3s worst-case and still strong
 
 
 def _c4_valid_cols(board):
