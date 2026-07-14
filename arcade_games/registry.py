@@ -1,9 +1,9 @@
 """The game catalog: icons, the menu list, the CLI alias map, and the title
 banner (play.py 3595-3635, 3769-3773).
 
-Imports the 14 game classes from terminal_games.games.*; this module is the
+Imports the 14 game classes from arcade_games.games.*; this module is the
 one place that knows about all of them, so net.py and menu.py/cli.py import
-the class list from here rather than reaching into terminal_games.games
+the class list from here rather than reaching into arcade_games.games
 directly (keeps the dependency graph acyclic).
 """
 from .games.snake import SnakeGame
@@ -45,9 +45,9 @@ _GAMES = [
 ]
 
 _TITLE = [
-    " ╔═╗╦  ╔═╗╦ ╦╔╦╗╔═╗  ╔═╗╔═╗╔╦╗╔═╗╔═╗ ",
-    " ║  ║  ╠═╣║ ║ ║║║╣   ║ ╦╠═╣║║║║╣ ╚═╗ ",
-    " ╚═╝╩═╝╩ ╩╚═╝═╩╝╚═╝  ╚═╝╩ ╩╩ ╩╚═╝╚═╝ ",
+    " ╔═╗╦═╗╔═╗╔═╗╔╦╗╔═╗ ",
+    " ╠═╣╠╦╝║  ╠═╣ ║║║╣  ",
+    " ╩ ╩╩ ╩╚═╝╩ ╩═╩╝╚═╝ ",
 ]
 
 _GAME_MAP = {g[0].lower().replace(' ', ''): g[2] for g in _GAMES}

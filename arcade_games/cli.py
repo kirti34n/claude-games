@@ -1,7 +1,7 @@
 """The plain-text CLI front-end for turn-based games with no terminal/curses
 needed (play.py 3979-4624): snake, 2048, minesweeper, connect4.
 
-ConnectFourGame (terminal_games/games/connect4.py) lazily imports
+ConnectFourGame (arcade_games/games/connect4.py) lazily imports
 _cli_c4_check_win and _cli_c4_ai_move from this module to avoid a circular
 import (games -> cli -> games).
 """
@@ -573,15 +573,15 @@ def _cli_mode(args):
         if state and not state.get('over'):
             print(_cli_render(state))
         else:
-            print('CLAUDE GAMES')
+            print('ARCADE GAMES')
             print('────────────')
             print('  snake        Classic snake, turn by turn')
             print('  2048         Slide and merge number tiles')
             print('  minesweeper  Uncover cells, avoid mines')
             print('  connect4     Drop pieces, get four in a row')
             print()
-            print('Start a game:  play cli start <game>')
-            print('Interactive:   ! play  (full-screen curses games)')
+            print('Start a game:  arcade cli start <game>')
+            print('Interactive:   ! arcade  (full-screen curses games)')
         return
 
     cmd = args[0].lower()
@@ -623,7 +623,7 @@ def _cli_mode(args):
         if state:
             print(_cli_render(state))
         else:
-            print('No active game. Run: play cli start <game>')
+            print('No active game. Run: arcade cli start <game>')
 
     elif cmd == 'quit':
         state = _load_game_state()
@@ -638,7 +638,7 @@ def _cli_mode(args):
     elif cmd in ('up', 'down', 'left', 'right'):
         state = _load_game_state()
         if not state:
-            print('No active game. Run: play cli start <game>')
+            print('No active game. Run: arcade cli start <game>')
             return
         if state.get('over'):
             print(_cli_render(state))

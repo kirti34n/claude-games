@@ -6,7 +6,7 @@ time, never 'from .config import CONFIG_DIR'. The test suite monkeypatches
 these three names on the module (see tests/test_games.py) to redirect all
 save/score I/O into a temp directory; binding the bare names at import time
 in another module would make that monkeypatch a silent no-op and cause
-writes to the user's real ~/.config/terminal-games/.
+writes to the user's real ~/.config/arcade-games/.
 """
 import json
 import os
@@ -15,19 +15,111 @@ import time
 from pathlib import Path
 
 _CONFIG_BASE = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
-CONFIG_DIR = _CONFIG_BASE / 'terminal-games'
+CONFIG_DIR = _CONFIG_BASE / 'arcade-games'
 SCORES_FILE = CONFIG_DIR / 'scores.json'
 GAME_STATE_FILE = CONFIG_DIR / 'current_game.json'
 
+# Every config-directory name this project has shipped under before the
+# current one, ordered newest-first. The project was originally
+# "claude-games", then renamed to "terminal-games", and is now
+# "arcade-games". _migrate_config() below walks this whole chain so a player
+# who last ran ANY prior version -- not just the immediately preceding one --
+# still finds their saves and high scores after upgrading.
+_LEGACY_CONFIG_NAMES = ('terminal-games', 'claude-games')
 
-def _migrate_config():
-    """One-time move of saves/scores from the pre-rename config directory."""
-    old = _CONFIG_BASE / 'claude-games'
+
+def _atomic_copy_file(src: Path, dest: Path) -> bool:
+    """Copy src to dest via temp-file + os.replace (same crash/race safety as
+    _atomic_write_json), then re-reads dest and compares it to what was
+    read from src. Only a verified, byte-for-byte-identical copy returns
+    True; the caller must not delete src unless this returns True, so a
+    copy that failed or landed corrupted never costs the player their
+    data -- worst case a legacy file is merely left behind for the next
+    run to retry."""
     try:
-        if old.is_dir() and not CONFIG_DIR.exists():
-            old.rename(CONFIG_DIR)
+        data = src.read_bytes()
+    except OSError:
+        return False
+    try:
+        fd, tmp_name = tempfile.mkstemp(dir=str(dest.parent),
+                                         prefix=f'.{dest.name}.', suffix='.tmp')
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(data)
+        os.replace(tmp_name, dest)
+    except OSError:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        return False
+    try:
+        return dest.read_bytes() == data
+    except OSError:
+        return False
+
+
+def _migrate_one_legacy_dir(old: Path):
+    """Merge one legacy config directory into CONFIG_DIR, file by file.
+
+    Deliberately not a single directory rename: CONFIG_DIR may already hold
+    real current files (this version has run before, or an earlier legacy
+    directory in the chain already landed some), so a rename could either
+    fail outright or, worse, silently clobber current data. Merging instead:
+    every legacy file that does not already exist at the new location is
+    copied over (an existing new-location file is NEVER overwritten -- it
+    always wins), and a legacy file is only ever deleted after
+    _atomic_copy_file has verified it landed intact at the destination, so a
+    failed or partial copy never loses data. Sub-directories (e.g. a stray
+    nested folder) and lock files (stale mutexes from an old process, never
+    meaningful data) are left untouched. The legacy directory itself is only
+    removed once nothing is left inside it; if anything could not be copied,
+    it stays behind for the next run to retry.
+    """
+    try:
+        if not old.is_dir():
+            return
+        entries = list(old.iterdir())
+    except OSError:
+        return
+    _ensure_config()
+    for entry in entries:
+        try:
+            if not entry.is_file() or entry.name.endswith(_LOCK_SUFFIX):
+                continue
+        except OSError:
+            continue
+        dest = CONFIG_DIR / entry.name
+        if dest.exists():
+            continue  # a real file already at the new location always wins
+        if _atomic_copy_file(entry, dest):
+            try:
+                entry.unlink()
+            except OSError:
+                pass  # copy is verified either way; a leftover source is harmless
+    try:
+        next(old.iterdir())  # anything left (uncopyable file, subdir)?
+    except StopIteration:
+        try:
+            old.rmdir()
+        except OSError:
+            pass
     except OSError:
         pass
+
+
+def _migrate_config():
+    """One-time move of saves/scores from every pre-rename config directory
+    into CONFIG_DIR, newest legacy name first. Safe to call on every
+    startup: already-migrated data is a no-op (every destination file
+    already exists), and a legacy directory that no longer exists is
+    skipped instantly."""
+    for legacy_name in _LEGACY_CONFIG_NAMES:
+        old = _CONFIG_BASE / legacy_name
+        if old != CONFIG_DIR:
+            _migrate_one_legacy_dir(old)
 
 
 def _ensure_config():

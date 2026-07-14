@@ -59,13 +59,13 @@ def probe_ascii_mode(force=None):
     once at startup, after locale.setlocale (main.py already does this)
     and before any curses window is created.
 
-    `force` lets a caller (or the TERMINAL_GAMES_ASCII env var) override
+    `force` lets a caller (or the ARCADE_GAMES_ASCII env var) override
     the probe outright, for testing on a real unicode terminal or forcing
     ascii on a console the probe cannot correctly detect.
     """
     global ascii_mode
     if force is None:
-        env = os.environ.get('TERMINAL_GAMES_ASCII')
+        env = os.environ.get('ARCADE_GAMES_ASCII')
         if env is not None:
             force = env not in ('', '0', 'false', 'False')
     if force is not None:

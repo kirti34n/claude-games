@@ -1,6 +1,6 @@
 <div align="center">
 
-# play
+# arcade
 
 **Fourteen terminal games, and a friend to beat.**
 
@@ -36,18 +36,21 @@ One command. No setup. Runs on Linux, macOS, WSL, and Windows.
 ## Quick start
 
 ```bash
-pip install terminal-games
+pip install arcade-games
 ```
 
 ```bash
-play                 # open the menu
-play snake           # jump straight into a game
-play mp              # play a friend over the network
-play list            # every game, with your high scores
+arcade                 # open the menu
+arcade snake           # jump straight into a game
+arcade mp              # play a friend over the network
+arcade list            # every game, with your high scores
 ```
 
 That is the whole story. The games use Python's built-in `curses`; on Windows
 the install adds `windows-curses` for you. Nothing else to install.
+
+`play` still works too, as an alias for `arcade`, kept around for anyone
+already used to it.
 
 <br>
 
@@ -63,7 +66,7 @@ by IP. No account, no server, no configuration.
 </div>
 
 ```bash
-play mp              # or press M in the menu
+arcade mp            # or press M in the menu
 ```
 
 Pick **Reversi**, **Connect Four**, or **Pong**, then **Host** or **Join**. The
@@ -78,40 +81,40 @@ is real-time and best on the same Wi-Fi.
 <h3>Arcade</h3>
 <table>
 <tr>
-<td width="50%" align="center"><img src="assets/snake.gif" width="380" alt="Snake"><br><b>Snake</b> &nbsp;·&nbsp; <code>play snake</code><br><sub>Eat, grow, and don't bite your tail.</sub></td>
-<td width="50%" align="center"><img src="assets/pacman.gif" width="380" alt="Pac-Man"><br><b>Pac-Man</b> &nbsp;·&nbsp; <code>play pacman</code><br><sub>Clear the dots, dodge four hunting ghosts.</sub></td>
+<td width="50%" align="center"><img src="assets/snake.gif" width="380" alt="Snake"><br><b>Snake</b> &nbsp;·&nbsp; <code>arcade snake</code><br><sub>Eat, grow, and don't bite your tail.</sub></td>
+<td width="50%" align="center"><img src="assets/pacman.gif" width="380" alt="Pac-Man"><br><b>Pac-Man</b> &nbsp;·&nbsp; <code>arcade pacman</code><br><sub>Clear the dots, dodge four hunting ghosts.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center"><img src="assets/dino.gif" width="380" alt="Dino Runner"><br><b>Dino Runner</b> &nbsp;·&nbsp; <code>play dino</code><br><sub>Jump the cacti, run forever.</sub></td>
-<td width="50%" align="center"><img src="assets/breakout.gif" width="380" alt="Breakout"><br><b>Breakout</b> &nbsp;·&nbsp; <code>play breakout</code><br><sub>Bounce the ball, break every brick.</sub></td>
+<td width="50%" align="center"><img src="assets/dino.gif" width="380" alt="Dino Runner"><br><b>Dino Runner</b> &nbsp;·&nbsp; <code>arcade dino</code><br><sub>Jump the cacti, run forever.</sub></td>
+<td width="50%" align="center"><img src="assets/breakout.gif" width="380" alt="Breakout"><br><b>Breakout</b> &nbsp;·&nbsp; <code>arcade breakout</code><br><sub>Bounce the ball, break every brick.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center"><img src="assets/shooter.gif" width="380" alt="Space Shooter"><br><b>Space Shooter</b> &nbsp;·&nbsp; <code>play shooter</code><br><sub>Waves, power-ups, and bosses.</sub></td>
-<td width="50%" align="center"><img src="assets/flappy.gif" width="380" alt="Flappy Bird"><br><b>Flappy Bird</b> &nbsp;·&nbsp; <code>play flappy</code><br><sub>Flap through the gaps.</sub></td>
+<td width="50%" align="center"><img src="assets/shooter.gif" width="380" alt="Space Shooter"><br><b>Space Shooter</b> &nbsp;·&nbsp; <code>arcade shooter</code><br><sub>Waves, power-ups, and bosses.</sub></td>
+<td width="50%" align="center"><img src="assets/flappy.gif" width="380" alt="Flappy Bird"><br><b>Flappy Bird</b> &nbsp;·&nbsp; <code>arcade flappy</code><br><sub>Flap through the gaps.</sub></td>
 </tr>
 <tr>
-<td colspan="2" align="center"><img src="assets/frogger.gif" width="380" alt="Frogger"><br><b>Frogger</b> &nbsp;·&nbsp; <code>play frogger</code><br><sub>Cross the traffic and the river to the home bays.</sub></td>
+<td colspan="2" align="center"><img src="assets/frogger.gif" width="380" alt="Frogger"><br><b>Frogger</b> &nbsp;·&nbsp; <code>arcade frogger</code><br><sub>Cross the traffic and the river to the home bays.</sub></td>
 </tr>
 </table>
 
 <h3>Puzzle</h3>
 <table>
 <tr>
-<td width="50%" align="center"><img src="assets/tetris.gif" width="380" alt="Tetris"><br><b>Tetris</b> &nbsp;·&nbsp; <code>play tetris</code><br><sub>Stack, clear lines, level up. Ghost piece included.</sub></td>
-<td width="50%" align="center"><img src="assets/2048.gif" width="380" alt="2048"><br><b>2048</b> &nbsp;·&nbsp; <code>play 2048</code><br><sub>Slide and merge to the big tile.</sub></td>
+<td width="50%" align="center"><img src="assets/tetris.gif" width="380" alt="Tetris"><br><b>Tetris</b> &nbsp;·&nbsp; <code>arcade tetris</code><br><sub>Stack, clear lines, level up. Ghost piece included.</sub></td>
+<td width="50%" align="center"><img src="assets/2048.gif" width="380" alt="2048"><br><b>2048</b> &nbsp;·&nbsp; <code>arcade 2048</code><br><sub>Slide and merge to the big tile.</sub></td>
 </tr>
 <tr>
-<td width="50%" align="center"><img src="assets/minesweeper.gif" width="380" alt="Minesweeper"><br><b>Minesweeper</b> &nbsp;·&nbsp; <code>play mines</code><br><sub>Read the numbers, flag the mines. Three sizes.</sub></td>
-<td width="50%" align="center"><img src="assets/sokoban.gif" width="380" alt="Sokoban"><br><b>Sokoban</b> &nbsp;·&nbsp; <code>play sokoban</code><br><sub>Push each box onto a target. Undo freely.</sub></td>
+<td width="50%" align="center"><img src="assets/minesweeper.gif" width="380" alt="Minesweeper"><br><b>Minesweeper</b> &nbsp;·&nbsp; <code>arcade mines</code><br><sub>Read the numbers, flag the mines. Three sizes.</sub></td>
+<td width="50%" align="center"><img src="assets/sokoban.gif" width="380" alt="Sokoban"><br><b>Sokoban</b> &nbsp;·&nbsp; <code>arcade sokoban</code><br><sub>Push each box onto a target. Undo freely.</sub></td>
 </tr>
 </table>
 
 <h3>Head to head <sub>(vs AI or a friend)</sub></h3>
 <table>
 <tr>
-<td width="33%" align="center"><img src="assets/pong.gif" width="330" alt="Pong"><br><b>Pong</b> &nbsp;·&nbsp; <code>play pong</code></td>
-<td width="33%" align="center"><img src="assets/reversi.gif" width="330" alt="Reversi"><br><b>Reversi</b> &nbsp;·&nbsp; <code>play reversi</code></td>
-<td width="33%" align="center"><img src="assets/connect4.gif" width="330" alt="Connect Four"><br><b>Connect Four</b> &nbsp;·&nbsp; <code>play connect4</code></td>
+<td width="33%" align="center"><img src="assets/pong.gif" width="330" alt="Pong"><br><b>Pong</b> &nbsp;·&nbsp; <code>arcade pong</code></td>
+<td width="33%" align="center"><img src="assets/reversi.gif" width="330" alt="Reversi"><br><b>Reversi</b> &nbsp;·&nbsp; <code>arcade reversi</code></td>
+<td width="33%" align="center"><img src="assets/connect4.gif" width="330" alt="Connect Four"><br><b>Connect Four</b> &nbsp;·&nbsp; <code>arcade connect4</code></td>
 </tr>
 </table>
 
@@ -140,25 +143,40 @@ time you open it.
 
 ## Turn-based mode
 
-For playing a move at a time in a chat or an editor, `play cli` runs the games
-as plain text, no full-screen UI and no curses required.
+For playing a move at a time in a chat or an editor, `arcade cli` runs the
+games as plain text, no full-screen UI and no curses required.
 
 <div align="center">
 <img src="assets/cli-connect4.gif" width="300" alt="Connect Four in the CLI mode">
 </div>
 
 ```bash
-play cli start connect4    # also: snake, 2048, minesweeper
-play 4                     # drop a disc in column 4
-play show                  # reprint the board
-play quit                  # end the game
+arcade cli start connect4    # also: snake, 2048, minesweeper
+arcade 4                     # drop a disc in column 4
+arcade show                  # reprint the board
+arcade quit                  # end the game
 ```
 
 <br>
 
 ## Built honestly
 
-One file, `play.py`, with a dependency-free test suite you can run yourself:
+A small shared core plus one file per game, with a dependency-free test suite
+you can run yourself:
+
+```
+arcade_games/
+├── game.py         # the Game base class every game subclasses
+├── config.py        # save files, high scores, config migration
+├── menu.py           # the curses main menu
+├── cli.py             # the plain-text `arcade cli` front-end
+├── net.py               # LAN multiplayer
+├── render.py, theme.py, terminal.py    # drawing, color themes, terminal launch
+└── games/
+    ├── snake.py, tetris.py, g2048.py, dino.py, breakout.py,
+    │   shooter.py, pong.py, flappy.py, minesweeper.py, pacman.py,
+    │   sokoban.py, reversi.py, frogger.py, connect4.py
+```
 
 ```bash
 python tests/test_games.py     # a headless fuzz, save/load, network, and a
@@ -172,8 +190,9 @@ see is what you get.
 
 ## Contributing
 
-Pull requests welcome. A new game is a subclass of `Game` added to `_GAMES`; a
-new level or theme is a few lines. Please run the tests first.
+Pull requests welcome. A new game is a subclass of `Game` in its own file
+under `arcade_games/games/`, added to `_GAMES` in `arcade_games/registry.py`;
+a new level or theme is a few lines. Please run the tests first.
 
 ## License
 

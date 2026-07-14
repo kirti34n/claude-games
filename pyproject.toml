@@ -3,9 +3,9 @@ requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "terminal-games"
+name = "arcade-games"
 dynamic = ["version"]
-description = "Terminal mini games to play while you wait"
+description = "A terminal arcade collection: 14 games to play while you wait"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "windows-curses; platform_system == 'Windows'",
 ]
-keywords = ["games", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi", "frogger", "multiplayer"]
+keywords = ["games", "arcade", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi", "frogger", "multiplayer"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console :: Curses",
@@ -31,15 +31,16 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kirti34n/terminal-games"
-Repository = "https://github.com/kirti34n/terminal-games"
+Homepage = "https://github.com/kirti34n/arcade-games"
+Repository = "https://github.com/kirti34n/arcade-games"
 
 [project.scripts]
+arcade = "play:main"
 play = "play:main"
 
 [tool.setuptools]
 py-modules = ["play"]
-packages = ["terminal_games", "terminal_games.games"]
+packages = ["arcade_games", "arcade_games.games"]
 
 [tool.setuptools.dynamic]
-version = {attr = "terminal_games._version.__version__"}
+version = {attr = "arcade_games._version.__version__"}

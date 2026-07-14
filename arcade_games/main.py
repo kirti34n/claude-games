@@ -1,46 +1,49 @@
 """
-play - Terminal mini games collection
+arcade - A terminal arcade collection
 
 Usage:
-    play              Launch interactive game menu (needs terminal)
-    play snake        Play Snake interactively
-    play tetris       Play Tetris interactively
-    play 2048         Play 2048 interactively
-    play dino         Play Dino Runner interactively
-    play breakout     Play Breakout interactively
-    play shooter      Play Space Shooter interactively
-    play pong         Play Pong interactively
-    play flappy       Play Flappy Bird interactively
-    play mines        Play Minesweeper interactively
-    play pacman       Play Pac-Man interactively
-    play sokoban      Play Sokoban interactively
-    play reversi      Play Reversi / Othello vs AI
-    play frogger      Play Frogger interactively
-    play connect4     Play Connect Four vs AI
+    arcade              Launch interactive game menu (needs terminal)
+    arcade snake        Play Snake interactively
+    arcade tetris       Play Tetris interactively
+    arcade 2048         Play 2048 interactively
+    arcade dino         Play Dino Runner interactively
+    arcade breakout     Play Breakout interactively
+    arcade shooter      Play Space Shooter interactively
+    arcade pong         Play Pong interactively
+    arcade flappy       Play Flappy Bird interactively
+    arcade mines        Play Minesweeper interactively
+    arcade pacman       Play Pac-Man interactively
+    arcade sokoban      Play Sokoban interactively
+    arcade reversi      Play Reversi / Othello vs AI
+    arcade frogger      Play Frogger interactively
+    arcade connect4     Play Connect Four vs AI
 
-    play mp           LAN multiplayer lobby (Reversi, Connect Four, Pong)
+    arcade mp           LAN multiplayer lobby (Reversi, Connect Four, Pong)
 
-    play cli                    Show in-conversation game menu
-    play cli start snake        Start Snake (turn-based)
-    play cli start 2048         Start 2048
-    play cli start minesweeper  Start Minesweeper
-    play cli start connect4     Start Connect4
-    play cli <move>             Make a move (up/down/left/right)
-    play cli <1-7>              Connect4: drop in column
-    play cli reveal <r> <c>     Minesweeper: reveal cell
-    play cli flag <r> <c>       Minesweeper: toggle flag
-    play cli show               Show current board
-    play cli quit               End current game
+    arcade cli                    Show in-conversation game menu
+    arcade cli start snake        Start Snake (turn-based)
+    arcade cli start 2048         Start 2048
+    arcade cli start minesweeper  Start Minesweeper
+    arcade cli start connect4     Start Connect4
+    arcade cli <move>             Make a move (up/down/left/right)
+    arcade cli <1-7>              Connect4: drop in column
+    arcade cli reveal <r> <c>     Minesweeper: reveal cell
+    arcade cli flag <r> <c>       Minesweeper: toggle flag
+    arcade cli show               Show current board
+    arcade cli quit               End current game
 
-    play --version    Show version
-    play --help       Show this help
+    arcade --version    Show version
+    arcade --help       Show this help
 
 Install:
-    pip install terminal-games
+    pip install arcade-games
 
-Note: the full-screen games use Python's curses module. It ships with Python on
-Linux/macOS; on Windows `pip install terminal-games` also pulls in windows-curses.
-The turn-based `play cli ...` games and text commands work with no curses at all.
+Note: `play` still works too (kept as a second entry point for existing
+installs); `arcade` and `play` run the exact same program.
+
+The full-screen games use Python's curses module. It ships with Python on
+Linux/macOS; on Windows `pip install arcade-games` also pulls in windows-curses.
+The turn-based `arcade cli ...` games and text commands work with no curses at all.
 """
 import locale
 import sys
@@ -124,7 +127,7 @@ def _main():
     elif cmd in ('h', 'help'):
         print(__doc__.strip())
     elif cmd in ('v', 'version'):
-        print(f'play {__version__}')
+        print(f'arcade-games {__version__}')
     elif cmd in ('list', 'ls'):
         for name, desc, cls in _GAMES:
             hi = config.load_high_score(cls.name)

@@ -41,15 +41,15 @@ sys.modules['curses'] = _fake
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import play  # noqa: E402
-from terminal_games import config as _config  # noqa: E402
-from terminal_games import game as _game_mod  # noqa: E402
+from arcade_games import config as _config  # noqa: E402
+from arcade_games import game as _game_mod  # noqa: E402
 
 # Redirect config to a temp dir so tests never touch the user's real saves.
-# This MUST patch the terminal_games.config module (where every consumer
+# This MUST patch the arcade_games.config module (where every consumer
 # reads CONFIG_DIR/SCORES_FILE/GAME_STATE_FILE at call time via
 # 'from . import config'), not the play shim: patching the shim's copies
 # would be a silent no-op and writes would hit the user's real
-# ~/.config/terminal-games/.
+# ~/.config/arcade-games/.
 _TMP = Path(tempfile.mkdtemp())
 _config.CONFIG_DIR = _TMP
 _config.SCORES_FILE = _TMP / 'scores.json'
@@ -190,7 +190,7 @@ def test_snake_tail_is_not_a_collision():
 
 def test_dino_fast_obstacle_collides():
     # dino-1 rewrite: obstacles are now {'x', 'kind'} (kind looked up in
-    # terminal_games.games.dino._GEOMETRY), not raw {'x', 'art'}.
+    # arcade_games.games.dino._GEOMETRY), not raw {'x', 'art'}.
     g = play.DinoGame(MockScreen(40, 110))
     g.setup()
     g.speed = 3.0
@@ -391,7 +391,7 @@ def test_dino_every_ground_obstacle_clearable_by_some_jump_timing():
     jump-launch tick that clears it. Drives the real DinoGame/update()
     integrator directly (not a re-derivation of the physics), so this
     proves the shipped code, not a model of it."""
-    from terminal_games.games.dino import _GEOMETRY, SPEED_MIN, SPEED_MAX, RAMP_TICKS
+    from arcade_games.games.dino import _GEOMETRY, SPEED_MIN, SPEED_MAX, RAMP_TICKS
 
     def ticks_for_speed(speed):
         # self.speed is recomputed from self.ticks on every update() call
@@ -524,7 +524,7 @@ def test_snake_speed_is_input_independent():
                 return k
             return ord('q')
 
-    # Game.run()'s tick loop lives in terminal_games.game and reads the
+    # Game.run()'s tick loop lives in arcade_games.game and reads the
     # module-level 'time' name it imported for itself, so the fake clock must
     # be patched there (mirrors the config-module landmine above: patching
     # play.time would be a no-op since play is just a re-export shim).
@@ -585,7 +585,7 @@ def test_net_link_heartbeat_and_timeout():
     _PEER_TIMEOUT. This is exactly the mechanism NET-2/NET-3 depend on every
     game's net_pump() to keep running even while paused/help-open/resizing."""
     import socket as _socket
-    from terminal_games import net as _net_mod
+    from arcade_games import net as _net_mod
 
     class _Clock:
         def __init__(self, t):
@@ -622,7 +622,7 @@ def test_main_text_commands_need_no_curses():
     they work with no terminal at all (piped environments like Claude
     Code); main()'s argv dispatch had zero test coverage (INFRA-12)."""
     import io
-    from terminal_games import main as _main_mod
+    from arcade_games import main as _main_mod
 
     def run(argv):
         saved_argv, saved_stdout = sys.argv, sys.stdout
@@ -635,7 +635,7 @@ def test_main_text_commands_need_no_curses():
             sys.argv = saved_argv
             sys.stdout = saved_stdout
 
-    assert 'play' in run(['version']).lower()
+    assert 'arcade' in run(['version']).lower()
     assert 'Snake' in run(['list'])
     assert run(['cli', 'start', 'snake']).strip()
     assert run(['cli', 'show']).strip()
@@ -647,7 +647,7 @@ def test_curses_wrapper_no_tty_no_terminal_exits_cleanly():
     Claude Code) must exit(1) with a message instead of hanging or raising
     when there is also no terminal emulator available to open into
     (main()/_curses_wrapper had zero test coverage, INFRA-12)."""
-    from terminal_games import terminal as _terminal_mod
+    from arcade_games import terminal as _terminal_mod
 
     class _NotATty:
         def isatty(self):

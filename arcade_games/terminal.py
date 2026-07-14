@@ -28,7 +28,11 @@ def _open_in_terminal(game_args: str = ''):
     """Launch the game in a split pane or new window (for piped environments like Claude Code)."""
     import shutil
     import subprocess
-    play_bin = shutil.which('play') or sys.argv[0]
+    # "arcade" is the primary console script; "play" is kept as a second
+    # entry point for existing installs (and because "play" collides with
+    # `sox` on some systems), so look for the new name first and fall back
+    # to the old one before finally falling back to argv[0] itself.
+    play_bin = shutil.which('arcade') or shutil.which('play') or sys.argv[0]
     game_argv = game_args.split()
 
     # Every non-Windows branch below ultimately runs the command through
