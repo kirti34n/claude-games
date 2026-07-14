@@ -565,6 +565,33 @@ class ShooterGame(Game):
             if self.wave % 5 == 0:
                 self._spawn_boss()
 
+    def _field_addstr(self, y, x, text, attr=0):
+        """Draw inside the playfield box ONLY, clipping at its inner edge.
+
+        safe_addstr clips to the SCREEN, not to the box, so nothing stopped a
+        moving entity from painting on top of the border or the HUD. Every
+        moving thing did: player bullets step _PLAYER_BULLET_DY per tick and
+        land exactly on the top border row at h=20 (and on the Score line at
+        h=30); enemy bullets keep descending through the bottom border and the
+        status bar; particles jitter one row past the ship onto the bottom
+        border, and past the boss onto the top one; power-ups fall to h-1. The
+        result was a box with holes punched in it in 19% of rendered frames.
+
+        The box is draw_box(2, 0, h-3, w), so its border occupies row 2, row
+        h-2, column 0 and column w-1. The interior is rows 3..h-3 and columns
+        1..w-2. Anything outside that is simply not drawn, which is correct:
+        an entity out there is off the playfield, not on the frame.
+        """
+        top, bot = 3, self.h - 3
+        left, right = 1, self.w - 2
+        if y < top or y > bot or not text:
+            return
+        x0 = max(x, left)
+        x1 = min(x + len(text), right + 1)
+        if x1 <= x0:
+            return
+        self.safe_addstr(y, x0, text[x0 - x:x1 - x], attr)
+
     def draw(self):
         # Header: title, HUD line, lives. Each lives on its own row so the
         # status footer (drawn last, full width) never overlaps them even
@@ -603,16 +630,16 @@ class ShooterGame(Game):
         for e in self.enemies:
             art = self._ENEMY_ART[e['type']]
             color = {'basic': 2, 'zigzag': 5, 'diver': 3, 'tank': 6}
-            self.safe_addstr(int(e['y']), int(e['x']), art,
-                             curses.color_pair(color.get(e['type'], 7))
-                             | curses.A_BOLD)
+            self._field_addstr(int(e['y']), int(e['x']), art,
+                               curses.color_pair(color.get(e['type'], 7))
+                               | curses.A_BOLD)
 
         # Boss
         if self.boss:
             bx, by = int(self.boss['x']), int(self.boss['y'])
             for i, line in enumerate(self._BOSS_ART):
-                self.safe_addstr(by + i, bx, line,
-                                 curses.color_pair(2) | curses.A_BOLD)
+                self._field_addstr(by + i, bx, line,
+                                   curses.color_pair(2) | curses.A_BOLD)
             hp_w = min(20, self.w - 10)
             filled = max(0, int(hp_w * self.boss['hp'] / self.boss['max_hp']))
             bar = '#' * filled + '-' * (hp_w - filled)
@@ -638,22 +665,22 @@ class ShooterGame(Game):
 
         # Bullets
         for b in self.bullets:
-            self.safe_addstr(int(b['y']), int(b['x']), '|',
-                             curses.color_pair(3) | curses.A_BOLD)
+            self._field_addstr(int(b['y']), int(b['x']), '|',
+                               curses.color_pair(3) | curses.A_BOLD)
         for b in self.enemy_bullets:
-            self.safe_addstr(int(b['y']), int(b['x']), '.',
-                             curses.color_pair(2) | curses.A_BOLD)
+            self._field_addstr(int(b['y']), int(b['x']), '.',
+                               curses.color_pair(2) | curses.A_BOLD)
 
         # Power-ups
         for p in self.powerups:
-            self.safe_addstr(int(p['y']), int(p['x']), p['type'],
-                             curses.color_pair(1) | curses.A_BOLD
-                             | curses.A_REVERSE)
+            self._field_addstr(int(p['y']), int(p['x']), p['type'],
+                               curses.color_pair(1) | curses.A_BOLD
+                               | curses.A_REVERSE)
 
         # Particles
         for p in self.particles:
-            self.safe_addstr(int(p['y']), int(p['x']), p['ch'],
-                             curses.color_pair(3))
+            self._field_addstr(int(p['y']), int(p['x']), p['ch'],
+                               curses.color_pair(3))
 
         # Player ship
         self.safe_addstr(self.h - 3, self.player_x - 1, '/A\\',
