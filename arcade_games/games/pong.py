@@ -36,10 +36,70 @@ class PongGame(Game):
     SPEED_LEVELS = (0.35, 0.6, 0.85)
     RALLY_THRESHOLDS = (4, 8)
 
-    # 8 quantized deflection zones with a double-wide flat center (zones 3
-    # and 4 both return the ball dead straight). Index 0 = top of the
-    # paddle, 7 = bottom.
-    ZONE_ANGLES_DEG = (-60, -45, -30, 0, 0, 30, 45, 60)
+    # Deflection angle range, in degrees, mapped continuously across where
+    # the ball hits the paddle (dead center -> MIN_DEFLECT_DEG, either tip
+    # -> MAX_DEFLECT_DEG). This replaces an earlier 8-zone quantization
+    # whose two center zones were BOTH mapped to a flat (0 deg) return:
+    # any paddle that tracks the ball (the AI, or a competent player)
+    # naturally centers on it, so most real hits landed in that double-
+    # wide flat zone, and once one flat return happened the next contact
+    # landed back in it too -- a self-reinforcing near-flat rally that
+    # took a small random jitter (2-6 deg) to even nudge, and routinely
+    # ran 100+ hits and 30-300+ SECONDS per point between two players who
+    # were both just doing their job (correctness re-audit finding: median
+    # point 17-47s, 39% of points over 30s, one point ran 322s). A
+    # continuous mapping with a real minimum angle means there is no flat
+    # return left to converge on: EVERY hit sends the ball back at a
+    # clearly non-trivial angle, so a rally only continues as long as both
+    # sides keep successfully reading real deflection, not as a side
+    # effect of both paddles converging on the field's physical center.
+    MIN_DEFLECT_DEG = 20
+    MAX_DEFLECT_DEG = 60
+
+    # Player paddle cap, cells/tick (roughly 30 cells/sec at the 16ms tick).
+    # This is also the ceiling every AI_SPEED entry below must stay under:
+    # the AI's continuous per-tick move is not gated by held()/autorepeat
+    # the way the player's is, so if ai_speed >= PLAYER_SPEED the AI can
+    # physically out-run any human paddle regardless of how well the human
+    # reads the ball -- an unwinnable match, not just a hard one (final
+    # correctness audit finding #1). 'hard' used to be 0.68 (~42 c/s),
+    # comfortably faster than the player's fixed 30 c/s pace, which made
+    # hard mode unbeatable on paddle speed alone. Difficulty now comes only
+    # from prediction noise (AI_ERROR) and reaction latency (AI_REACT); all
+    # three AI_SPEED entries stay strictly below PLAYER_SPEED so a human
+    # paddle moving at its own achievable rate can always keep pace.
+    #
+    # PLAYER_SPEED must also clear the ball's own vertical speed, which the
+    # earlier value did not. The ball tops out at SPEED_LEVELS[2] = 0.85
+    # c/t, and MAX_DEFLECT_DEG = 60, so its peak vertical component is
+    # 0.85 * sin(60) = 0.736 c/t (about 46 rows/sec). At the old
+    # PLAYER_SPEED of 0.48 (30 rows/sec) the ball climbed and fell 1.5x
+    # faster than any paddle could follow, so a player who READS the ball
+    # and chases it could never arrive in time: a reactive bot lost 11/12
+    # on easy and 12/12 on medium and hard, while a bot that PREDICTED the
+    # arrival row won 12/12 on every difficulty. That is not a difficulty
+    # curve, it is a cliff between "impossible" and "trivial" with no skill
+    # gradient in between. 0.85 c/t (about 53 rows/sec) clears the ball's
+    # 0.736 with real margin, so tracking the ball is a viable way to play
+    # and prediction is a refinement rather than the only option.
+    PLAYER_SPEED = 0.85
+    AI_SPEED = {'easy': 0.42, 'medium': 0.62, 'hard': 0.78}
+    # AI_ERROR is a uniform +-row offset applied to the AI's ONE committed
+    # prediction per approach (see the one-shot-commit comment in update()).
+    # The paddle is PADDLE_H=5 rows tall, so a prediction within 2.5 rows of
+    # the true arrival row still connects -- these values used to be 3.0 /
+    # 1.5 / 0.5, all comfortably UNDER that 2.5-row miss threshold except a
+    # fraction of easy's, so medium and hard mathematically could not miss
+    # (measured 100% catch rate against a wide spread of angles/speeds) no
+    # matter how the rest of the match played out (final correctness
+    # re-audit finding: the AI could not win a single point from a
+    # competent player on any difficulty). Retuned so each difficulty has a
+    # real, escalating chance to actually miss (measured catch rate against
+    # a spread of random incoming shots: ~72% easy, ~92% medium, ~98% hard).
+    AI_ERROR = {'easy': 6.0, 'medium': 3.5, 'hard': 2.7}
+    # Reaction latency in ticks, scaled up from the old 40 ms tick so the
+    # real-world reaction delay (ticks * tick_ms) is unchanged.
+    AI_REACT = {'easy': 20, 'medium': 10, 'hard': 5}
 
     # Bumped whenever get_save_data()'s schema changes. setup() only trusts
     # a save whose stamp matches; an older/newer schema falls through to a
@@ -59,11 +119,30 @@ class PongGame(Game):
         return (max(0, (self.h - self.NET_FIELD_H) // 2),
                 max(0, (self.w - self.NET_FIELD_W) // 2))
 
+    def _wall_rows(self):
+        # Single source of truth for the rows the top/bottom walls are
+        # drawn on, shared by draw() (what gets painted) and update() (what
+        # the ball bounces off). Previously update() clamped ball_y to
+        # these exact rows on a bounce, so at the instant of a bounce the
+        # ball glyph was drawn on the same cell as the wall dash, erasing
+        # part of the wall it was supposedly bouncing off (final
+        # correctness audit finding #3). Callers that need where the ball
+        # is allowed to rest must use the interior cell just past these
+        # (wall + 1 / wall - 1), never the wall row itself.
+        ph = self._ph()
+        return 2, ph - 3
+
     def setup(self):
         # In a network game the host owns physics (left paddle); the guest sends
         # its paddle (right) and renders the host's authoritative state.
         self.net = getattr(self, 'net', None)
         self.role = getattr(self, 'role', 'host')
+        # AI reaction-commit bookkeeping (see the AI target prediction block
+        # in update()): transient per-approach state, not meaningful to
+        # persist across a save, so it is (re)initialized here unconditionally
+        # rather than through the save/restore path.
+        self._ai_locked = False
+        self._ai_approach_ticks = 0
         saved = self._load_save(self.name) if not self.net else None
         if saved and saved.get('_v') == self._SAVE_VERSION:
             # The difficulty just chosen at the picker (self.difficulty, set
@@ -81,9 +160,10 @@ class PongGame(Game):
             # from the picker's choice, not restored verbatim from the save
             # (shooter-12's second half): otherwise the label says one
             # difficulty while the AI plays another.
-            self.ai_speed = {'easy': 0.24, 'medium': 0.45, 'hard': 0.68}[diff]
-            self.ai_error = {'easy': 3.0, 'medium': 1.5, 'hard': 0.5}[diff]
-            self.ai_react = {'easy': 20, 'medium': 10, 'hard': 5}[diff]
+            self.ai_speed = self.AI_SPEED[diff]
+            self.ai_error = self.AI_ERROR[diff]
+            self.ai_react = self.AI_REACT[diff]
+            self.player_speed = self.PLAYER_SPEED
             self.net = None
             self.role = 'host'
             # The field is a fixed 60x20 regardless of mode (see NET_FIELD_W/
@@ -96,14 +176,10 @@ class PongGame(Game):
             self.min_w, self.min_h = self.NET_FIELD_W, self.NET_FIELD_H
             return
         diff = self.difficulty
-        # AI cells/tick, tuned so the AI's real-world speed (cells/sec) stays
-        # roughly 15 / 28 / 42 across easy/medium/hard at the 16 ms tick.
-        self.ai_speed = {'easy': 0.24, 'medium': 0.45, 'hard': 0.68}[diff]
-        self.ai_error = {'easy': 3.0, 'medium': 1.5, 'hard': 0.5}[diff]
-        # Reaction latency in ticks, scaled up from the old 40 ms tick so the
-        # real-world reaction delay (ticks * tick_ms) is unchanged.
-        self.ai_react = {'easy': 20, 'medium': 10, 'hard': 5}[diff]
-        self.player_speed = 0.48  # cells/tick, roughly 30 cells/sec
+        self.ai_speed = self.AI_SPEED[diff]
+        self.ai_error = self.AI_ERROR[diff]
+        self.ai_react = self.AI_REACT[diff]
+        self.player_speed = self.PLAYER_SPEED
         # Field is fixed regardless of mode, so gate on it always.
         self.min_w, self.min_h = self.NET_FIELD_W, self.NET_FIELD_H
         pw, ph = self._pw(), self._ph()
@@ -244,8 +320,25 @@ class PongGame(Game):
     def _deflect(self, paddle_y):
         hit_frac = (self.ball_y - paddle_y) / self.PADDLE_H
         hit_frac = max(0.0, min(0.999, hit_frac))
-        zone = int(hit_frac * 8)
-        return math.radians(self.ZONE_ANGLES_DEG[zone])
+        # Continuous deflection: how far from paddle-center the ball hit
+        # sets the SIGN (top half sends it up, bottom half sends it down),
+        # and how far from center sets the MAGNITUDE, scaled linearly from
+        # MIN_DEFLECT_DEG (a near-center hit) to MAX_DEFLECT_DEG (a hit
+        # right at either tip). There is no hit position that returns the
+        # ball flat -- see the MIN_DEFLECT_DEG comment above for why that
+        # matters (the old flat zone was the actual cause of the grind).
+        offset = hit_frac - 0.5  # -0.5 (top) .. +0.5 (bottom)
+        if offset > 0:
+            sign = 1.0
+        elif offset < 0:
+            sign = -1.0
+        else:
+            # Exact dead center: no side to bias from, pick one at random
+            # rather than always breaking the same way.
+            sign = 1.0 if random.random() < 0.5 else -1.0
+        magnitude = self.MIN_DEFLECT_DEG + abs(offset) * 2 * (
+            self.MAX_DEFLECT_DEG - self.MIN_DEFLECT_DEG)
+        return math.radians(sign * magnitude)
 
     def _speed_for_rally(self):
         if self.rally >= self.RALLY_THRESHOLDS[1]:
@@ -265,9 +358,10 @@ class PongGame(Game):
         if self.net and self.role == 'guest':
             # Guest paddle moves locally every tick for responsiveness, then
             # is sent to the host, which is authoritative for the match.
-            if self.held(ord('w'), curses.KEY_UP):
+            d = self.steer_dir((ord('w'), curses.KEY_UP), (ord('s'), curses.KEY_DOWN))
+            if d < 0:
                 self.ai_y = max(2.0, self.ai_y - self.player_speed)
-            elif self.held(ord('s'), curses.KEY_DOWN):
+            elif d > 0:
                 self.ai_y = min(float(top), self.ai_y + self.player_speed)
             self.net.send({'type': 'p', 'y': self.ai_y})
             # NET-8 root cause: this used to be a blind `while poll() is not
@@ -303,10 +397,18 @@ class PongGame(Game):
 
         # Continuous paddle movement (host or solo left paddle). Moving here
         # instead of handle_input() decouples paddle speed from OS key
-        # auto-repeat (the paddle-moves-on-key-event bug).
-        if self.held(ord('w'), curses.KEY_UP):
+        # auto-repeat (the paddle-moves-on-key-event bug). held() (default
+        # latch_ms, i.e. the core's 180ms continuous-motion latch), not the
+        # raw event-only edge: at this game's 16ms tick, an unlatched check
+        # only saw a key on 34-45% of ticks under realistic OS autorepeat
+        # (the event rate is slower than the tick rate), so the paddle
+        # crawled at 10-14 c/s instead of its intended ~30 c/s while the AI
+        # paddle, which moves unconditionally every tick, did not share
+        # that penalty (final correctness audit finding #1, part 1).
+        d = self.steer_dir((ord('w'), curses.KEY_UP), (ord('s'), curses.KEY_DOWN))
+        if d < 0:
             self.player_y = max(2.0, self.player_y - self.player_speed)
-        elif self.held(ord('s'), curses.KEY_DOWN):
+        elif d > 0:
             self.player_y = min(float(top), self.player_y + self.player_speed)
 
         if self.serving:
@@ -317,12 +419,20 @@ class PongGame(Game):
         self.ball_x += self.ball_dx
         self.ball_y += self.ball_dy
 
-        # Wall bounce (top/bottom)
-        if self.ball_y <= 2:
-            self.ball_y = 2.0
+        # Wall bounce (top/bottom). Clamp to one cell INSIDE the wall
+        # (top_wall_y+1 / bottom_wall_y-1), never onto the wall row itself:
+        # the wall is drawn on top_wall_y/bottom_wall_y (see draw()), so
+        # resting the ball there would paint the ball glyph directly over
+        # the wall dash on every bounce frame, erasing it (final
+        # correctness audit finding #3). Resting one cell inside instead
+        # still reads as "bounced off the wall surface" while never
+        # touching the pixel the wall owns.
+        top_wall_y, bottom_wall_y = self._wall_rows()
+        if self.ball_y <= top_wall_y + 1:
+            self.ball_y = float(top_wall_y + 1)
             self.ball_dy = abs(self.ball_dy)
-        elif self.ball_y >= ph - 3:
-            self.ball_y = float(ph - 3)
+        elif self.ball_y >= bottom_wall_y - 1:
+            self.ball_y = float(bottom_wall_y - 1)
             self.ball_dy = -abs(self.ball_dy)
 
         # Player paddle (left, x=4). Collision spans exactly the drawn cells.
@@ -361,15 +471,62 @@ class PongGame(Game):
 
         # The right paddle is the AI (solo) or the guest (network).
         if not self.net:
-            # AI target prediction
-            if self.ticks % self.ai_react == 0:
-                if self.ball_dx > 0:
+            # AI target prediction. Commits to exactly ONE noisy prediction
+            # per approach (ai_react ticks after the ball turns toward the
+            # AI), then holds it for the rest of that approach, instead of
+            # redrawing a fresh random error every ai_react ticks for as
+            # long as the ball keeps coming. Continuous resampling was
+            # measured to make AI_ERROR nearly irrelevant: the paddle only
+            # moves toward the CURRENT target at ai_speed, so a fast stream
+            # of independent, zero-mean-noise targets acts as a low-pass
+            # filter on the paddle's own path -- it settles near the TRUE
+            # mean position by the time the ball arrives regardless of how
+            # large AI_ERROR is (measured: 100% catch rate at every
+            # difficulty even with AI_ERROR pushed to 3-8x its tuned
+            # values). A single committed guess is what actually makes a
+            # missed read possible, which is what AI_ERROR was always
+            # supposed to control (final correctness re-audit finding: the
+            # AI could not lose a single point to a competent player on any
+            # difficulty).
+            if self.ball_dx > 0:
+                self._ai_approach_ticks += 1
+                if not self._ai_locked and self._ai_approach_ticks >= self.ai_react:
                     dist = max(1.0, ai_x - self.ball_x)
                     pred_y = self.ball_y + self.ball_dy * (dist / max(0.1, abs(self.ball_dx)))
+                    # Reflect the straight-line projection off the top/
+                    # bottom walls instead of just clamping it into range.
+                    # A plain clamp collapses every prediction that would
+                    # cross a wall before reaching the paddle onto the
+                    # wall itself, which is only ever correct if the ball
+                    # happens to arrive exactly there -- for any other
+                    # case it is simply the wrong row, so the AI moved to
+                    # (and sat at) a point the ball was never going to
+                    # reach, missing returns a player using the same
+                    # linear-projection instinct would make. Folding the
+                    # projection back and forth across the legal travel
+                    # band (a triangle wave) matches the ball's real
+                    # bounce physics, so the AI's skill genuinely comes
+                    # from AI_ERROR/AI_REACT (as intended) instead of
+                    # being artificially capped by a naive, bounce-blind
+                    # prediction on top of them.
+                    top_wall, bottom_wall = self._wall_rows()
+                    lo, hi = float(top_wall + 1), float(bottom_wall - 1)
+                    span = hi - lo
+                    if span > 0:
+                        period = 2 * span
+                        folded = (pred_y - lo) % period
+                        if folded > span:
+                            folded = period - folded
+                        pred_y = lo + folded
                     pred_y += random.uniform(-self.ai_error, self.ai_error)
                     self.ai_target = max(2.0, min(float(ph - 3), pred_y))
-                else:
-                    self.ai_target = float(ph // 2)
+                    self._ai_locked = True
+                # else: still reacting (not yet ai_react ticks into this
+                # approach) or already locked -- ai_target holds steady.
+            else:
+                self._ai_locked = False
+                self._ai_approach_ticks = 0
+                self.ai_target = float(ph // 2)
             # AI movement
             ai_center = self.ai_y + self.PADDLE_H / 2.0
             if ai_center < self.ai_target - 0.5:
@@ -411,12 +568,12 @@ class PongGame(Game):
         self.safe_addstr(oy + 1, sc_x + len(score_s) + 1, right_lab,
                          curses.color_pair(2))
 
-        # Top/bottom walls, drawn exactly on the rows the physics bounces
-        # off (update()'s wall-bounce clamps ball_y to 2 on top and ph-3 on
-        # bottom). These used to not be drawn at all, so the field boundary
-        # was invisible and the ball appeared to bounce off nothing.
-        top_wall_y = 2
-        bottom_wall_y = ph - 3
+        # Top/bottom walls. update()'s wall-bounce now rests the ball one
+        # cell inside these rows (see _wall_rows()), never on them, so the
+        # ball glyph can never overwrite a wall dash. These used to not be
+        # drawn at all, so the field boundary was invisible and the ball
+        # appeared to bounce off nothing.
+        top_wall_y, bottom_wall_y = self._wall_rows()
         wall = '-' * pw
         self.safe_addstr(oy + top_wall_y, ox, wall, curses.color_pair(4))
         self.safe_addstr(oy + bottom_wall_y, ox, wall, curses.color_pair(4))
@@ -425,9 +582,17 @@ class PongGame(Game):
         # bottom_wall_y inclusive), the same rows the ball can occupy. This
         # used to run one row past bottom_wall_y, which made the net's
         # bottom edge actively misleading about where the ball bounces.
+        # Strictly BETWEEN the two walls (never on top_wall_y or
+        # bottom_wall_y themselves) and phased off top_wall_y rather than
+        # off row 0, so the dotted pattern starts right after the top wall
+        # and stops right before the bottom wall instead of drawing over
+        # the top wall (old: phase was against absolute row parity, and
+        # top_wall_y=2 is even, so it collided with the top wall but the
+        # inclusive range also ran one row further than the bottom wall
+        # needed, making the two walls look different).
         mid_x = ox + pw // 2
-        for y in range(top_wall_y, bottom_wall_y + 1):
-            if y % 2 == 0:
+        for y in range(top_wall_y + 1, bottom_wall_y):
+            if (y - top_wall_y) % 2 == 0:
                 self.safe_addstr(oy + y, mid_x, ':', curses.color_pair(4))
 
         # Paddles

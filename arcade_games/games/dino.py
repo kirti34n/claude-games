@@ -83,7 +83,12 @@ _GEOMETRY = {
 
 class DinoGame(Game):
     name = "dino"
-    min_h = 15
+    # ground_y = h-5; a jump's apex is 7 rows above the feet and the
+    # standing sprite is 3 rows tall, so the head can reach row
+    # (h-5)-7-2 = h-14. At h=15 that is row 1, the title/score row, and
+    # a mid-jump dino gets spliced into the header text. h=16 keeps the
+    # whole jump arc clear of the HUD.
+    min_h = 16
     min_w = 50
 
     @property
@@ -147,8 +152,37 @@ class DinoGame(Game):
                 self.on_ground = True
 
         # Ducking only makes sense (and only reduces the hitbox) while
-        # grounded; you cannot duck out of a jump you already committed to.
-        self.ducking = self.on_ground and self.held(curses.KEY_DOWN, ord('s'))
+        # grounded; the `self.on_ground and` gate also means a jump input
+        # cancels the duck pose (and its hitbox) INSTANTLY, the same tick
+        # the jump is registered: handle_input() sets on_ground = False
+        # before update() ever recomputes self.ducking, so a still-latched
+        # duck key can never keep the duck hitbox alive into a jump.
+        #
+        # latch_ms=750 (not the default ~180ms): curses gives no key-up
+        # event, so a PHYSICALLY held duck key only produces new events at
+        # the OS autorepeat rate, and self.keys only reflects events since
+        # the last update(). At this game's 33ms tick, any autorepeat rate
+        # slower than ~30/s (the common case) leaves ticks with no event in
+        # between, so the short default latch would intermittently report
+        # "not ducking" while the key is still down -- and a single such
+        # tick under a ptero_high is an instant, unavoidable death.
+        #
+        # The latch must also span the OS's INITIAL repeat delay, which is
+        # the long silent gap between the first key-down and the start of
+        # autorepeat. GNOME and KDE set that to 500ms, but bare X11's server
+        # default is 660ms (xset q, "auto repeat delay: 660"), and a 600ms
+        # latch measurably left 19 of 160 press timings lethal there with
+        # the key physically held the whole time. 750ms clears the slowest
+        # of them with margin.
+        #
+        # Over-latching after a genuine release is safe here because ducking
+        # is never itself lethal (every obstacle that survives a duck also
+        # survives a jump, and airborne ducking is forced off by the
+        # on_ground gate above regardless of latch state), so there is no
+        # failure mode from holding the duck pose slightly too long, only
+        # from dropping it too early.
+        self.ducking = self.on_ground and self.held(
+            curses.KEY_DOWN, ord('s'), latch_ms=750)
 
         gy = self.ground_y
         h = int(-self.dino_y)

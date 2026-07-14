@@ -33,6 +33,13 @@ class Game:
     # advances it multiple cells with no chance to react and no frame drawn
     # in between (snake-3).
     max_catchup_ticks = 3
+    # Most games steer with WASD/arrows, so the run loop is free to steal
+    # plain lowercase 'p' (pause) and 'q' (quit) globally before handle_input
+    # ever sees them. A text-entry game (Wordle) needs every a-z letter,
+    # including p and q, to reach handle_input untouched. Such a game sets
+    # this True to opt out: the run loop then leaves 'p'/'q' alone (Esc
+    # still quits; there is no pause key while typing is live).
+    consumes_letter_keys = False
     # --- help-overlay toggle: reconstructing key-down edges ('?'/'H') -----
     # curses delivers no key-up event, so a HELD key is indistinguishable
     # from a fast series of taps except by timing: the OS emits one event on
@@ -81,6 +88,10 @@ class Game:
         # never mutate position from inside handle_input().
         self.keys = []
         self.ticks = 0
+        # Wall-clock time of the most recent EVENT seen for each key code,
+        # keyed by code, never cleared per-tick (unlike self.keys). Backs
+        # held_latched() below.
+        self._key_last_seen = {}
 
     def safe_addstr(self, y, x, text, attr=0):
         render.safe_addstr(self.stdscr, y, x, text, attr)
@@ -94,11 +105,130 @@ class Game:
     def draw_status_bar(self, text, attr=None):
         render.status_bar(self.stdscr, self.h, self.w, text, attr)
 
-    def held(self, *codes):
+    # Terminals (and curses on top of them) deliver no key-up event at all:
+    # a physically held key produces new events only at the OS's autorepeat
+    # RATE (macOS ~15/s = 67ms apart, X11 ~25/s = 40ms, Windows-fastest
+    # ~31/s = 32ms), and even that doesn't start until an initial repeat
+    # DELAY has first elapsed (commonly 250-500ms). self.keys reflects only
+    # events received since the last update() and is cleared every tick, so
+    # raw event-only held() falsely reports "not held" on any tick that
+    # lands in a gap between autorepeat events, and for the whole initial
+    # delay before autorepeat has even begun. At a 30-60Hz tick rate that is
+    # at least one blind tick per autorepeat cycle in steady state (cosmetic
+    # stutter for continuous motion), and 6-14 CONSECUTIVE blind ticks
+    # during the initial delay (fatal for a held STATE where losing it for
+    # even one tick ends the game, e.g. Dino's duck under a low
+    # pterodactyl).
+    #
+    # held()'s latch_ms bridges this the same way _HELP_REPEAT_GAP
+    # reconstructs a key-down edge for the help toggle: a key counts as
+    # held for latch_ms after its last EVENT, not only on a tick that
+    # itself received one. _DEFAULT_LATCH_MS (180ms) comfortably exceeds
+    # the slowest steady-state autorepeat period on any platform (macOS's
+    # 67ms worst case), so once autorepeat is running a held key never
+    # again reads as released; the cost is up to latch_ms of overshoot
+    # after a genuine release, which is imperceptible for motion.
+    #
+    # STATED PLAINLY: no latch_ms, however large, eliminates the OS's
+    # initial repeat delay, because curses gives no key-up event to detect
+    # the delay ending -- only measure the silence that follows an event.
+    # A latch can only bridge that gap by being AT LEAST as long as the
+    # delay and tolerating that much overshoot on release. That is a
+    # bound on the damage, not an abolition of the limitation.
+    _DEFAULT_LATCH_MS = 180
+
+    def held(self, *keys, latch_ms=None):
         """True if any of the given key codes was received since the last
-        update(). Use for continuous movement inside update(); never in
-        handle_input()."""
-        return any(c in self.keys for c in codes)
+        update(), OR within the last latch_ms of its most recent event.
+        Use for continuous movement/state inside update(); never in
+        handle_input().
+
+        latch_ms=None (the default) uses _DEFAULT_LATCH_MS (180ms), sized
+        for continuous MOTION (paddle/ship/piece steering): it bridges the
+        steady-state gap between OS autorepeat events on every platform, so
+        a physically held direction key reads as continuously held once
+        autorepeat starts.
+
+        Pass a longer latch_ms explicitly for a held STATE where a single
+        falsely-released tick is fatal (Dino's duck passes 550, comfortably
+        past the ~500ms worst-case initial repeat delay -- see the class
+        comment above _DEFAULT_LATCH_MS for why nothing shorter is safe and
+        why even that cannot be made 100% airtight).
+
+        Pass latch_ms=0 for the raw, unlatched, event-only edge -- "did an
+        event for this key arrive on exactly this tick" -- when a caller
+        does its own repeat-rate handling and needs to see the gaps rather
+        than have them papered over (Tetris's shift/soft-drop cooldowns and
+        hard-drop re-arm timer all do this deliberately).
+        """
+        if any(c in self.keys for c in keys):
+            return True
+        ms = self._DEFAULT_LATCH_MS if latch_ms is None else latch_ms
+        if ms <= 0:
+            return False
+        now = time.monotonic()
+        cutoff = ms / 1000.0
+        for c in keys:
+            t = self._key_last_seen.get(c)
+            if t is not None and now - t < cutoff:
+                return True
+        return False
+
+    def steer_dir(self, neg_keys, pos_keys):
+        """Continuous-axis steering (paddle/ship/etc): returns -1, 0, or 1.
+        Resolves a same-tick direction reversal INSTANTLY instead of
+        waiting out the stale opposite key's held() latch.
+
+        held()'s latch_ms (default 180ms) is sized so a physically held
+        key survives the gaps between OS autorepeat events -- correct for
+        steady motion, but it means that for up to latch_ms after a player
+        releases one direction key and presses the other, BOTH keys read
+        as held at once. A caller doing `if held(left): ... elif
+        held(right): ...` then keeps moving the stale direction (wrong
+        way) for that whole window; a caller doing two independent `if`s
+        (no elif) gets both branches firing and cancelling to zero
+        (frozen) instead.
+
+        self.keys holds only events received since the LAST update() (see
+        the class docstring above `keys`), i.e. genuinely fresh events for
+        THIS tick, as opposed to held()'s latch which also counts stale
+        ones. So: if a fresh event for one side arrived this tick and none
+        did for the other, the fresh side wins outright -- clear_held()
+        cancels the other side's latch (and any of this tick's own stale
+        entries) so held() cannot resurrect it a moment later. When both
+        sides get a fresh event on the same tick (a fast tap-tap), or
+        neither does, this falls through to plain held() with no
+        preference, same as before.
+        """
+        neg_fresh = any(k in self.keys for k in neg_keys)
+        pos_fresh = any(k in self.keys for k in pos_keys)
+        if neg_fresh and not pos_fresh:
+            self.clear_held(*pos_keys)
+        elif pos_fresh and not neg_fresh:
+            self.clear_held(*neg_keys)
+        if self.held(*neg_keys):
+            return -1
+        if self.held(*pos_keys):
+            return 1
+        return 0
+
+    def clear_held(self, *keys):
+        """Immediately cancel any latch (and this-tick event) for the given
+        key codes, so the very next held() call for them returns False
+        instead of waiting out latch_ms. For when a different key must be
+        able to interrupt a held state on the spot -- e.g. pressing jump
+        should instantly drop a still-latched duck, not wait out its
+        550ms."""
+        for c in keys:
+            self._key_last_seen.pop(c, None)
+            while c in self.keys:
+                self.keys.remove(c)
+
+    def held_latched(self, *codes, latch=0.15):
+        """Deprecated: use held(*codes, latch_ms=...) instead. Kept only so
+        existing call sites keep working unmodified; `latch` is seconds
+        (held()'s latch_ms is milliseconds)."""
+        return self.held(*codes, latch_ms=latch * 1000)
 
     def setup(self):
         pass
@@ -371,7 +501,7 @@ class Game:
                 # keypress (INFRA-2 regression).
                 key = -1
 
-            if key == 27 or key == ord('q'):
+            if key == 27 or (key == ord('q') and not self.consumes_letter_keys):
                 if not self.game_over:
                     self._auto_save()
                 self.stdscr.nodelay(False)
@@ -383,10 +513,15 @@ class Game:
             # handle_input(), which could commit an irreversible move
             # (Reversi) or slide the board (2048).
             consumed = False
-            if key == ord('p') and not self.game_over and not getattr(self, 'net', None):
+            if key == ord('p') and not self.game_over and not getattr(self, 'net', None) \
+                    and not self.consumes_letter_keys:
                 self.paused = not self.paused  # no pausing a live network game
                 consumed = True
-            elif key == ord('?') or key == ord('H'):
+            elif key == ord('?') or (key == ord('H') and not self.consumes_letter_keys):
+                # A letter-consuming game (Wordle) needs every a-z key,
+                # including a shifted/caps-lock 'H', to reach handle_input as
+                # a real letter; only '?' opens help for it (see
+                # consumes_letter_keys above and wordle.py's get_controls).
                 # Key-down-edge reconstruction, not a rate limiter: see
                 # _HELP_REPEAT_GAP / _HELP_CONFIRM. A held '?'/'H' must toggle
                 # the overlay exactly once, however long it is held, instead
@@ -478,6 +613,7 @@ class Game:
             process_key = key != -1 and not consumed
             if process_key and active and not too_small:
                 self.keys.append(key)
+                self._key_last_seen[key] = time.monotonic()
                 self.handle_input(key)
 
             # A too-small terminal must still pause a LOCAL game's clock (so

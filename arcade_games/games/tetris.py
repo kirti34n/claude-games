@@ -134,7 +134,14 @@ class TetrisGame(Game):
     BUFFER = 2  # hidden rows above the visible field; enables Lock Out
     TOTAL_ROWS = ROWS + BUFFER
     min_h = 24
-    min_w = 40
+    # 40 was sized for the playfield alone, not for the 7-segment status bar
+    # below (2 escape hatches + 5 real controls): render.status_bar's
+    # greedy fit (see its docstring) only had room for 4 of the 7 segments
+    # at width 40, silently dropping S:Soft drop, SPC:Hard drop AND
+    # P:Pause -- the hard-drop key is how a player actually places a piece
+    # under time pressure, and pause has no other discovery path. 70 is the
+    # smallest width that fits all 7 segments with a little room to spare.
+    min_w = 70
 
     def setup(self):
         saved = self._load_save(self.name)
@@ -323,8 +330,8 @@ class TetrisGame(Game):
         # received since the last update(), so held() here is "did a shift
         # event arrive for this tick", never an inferred hold state.
         self._shift_cooldown += _TICK_MS
-        left = self.held(curses.KEY_LEFT, ord('a'))
-        right = self.held(curses.KEY_RIGHT, ord('d'))
+        left = self.held(curses.KEY_LEFT, ord('a'), latch_ms=0)
+        right = self.held(curses.KEY_RIGHT, ord('d'), latch_ms=0)
         direction = -1 if left and not right else (1 if right and not left else 0)
         if direction and self._shift_cooldown >= _RATE_CAP_MS:
             # Bank the overshoot past the cap instead of zeroing it: ticks
@@ -347,7 +354,7 @@ class TetrisGame(Game):
         # tell a genuinely held key apart from a fast repeat stream, so a
         # held key advances at the capped rate rather than once per tick.
         self._drop_cooldown += _TICK_MS
-        if self.held(curses.KEY_DOWN, ord('s')):
+        if self.held(curses.KEY_DOWN, ord('s'), latch_ms=0):
             if self._drop_cooldown >= _RATE_CAP_MS:
                 # See the matching comment in _update_shift: bank the
                 # overshoot instead of zeroing it, so the cap is honoured
@@ -392,7 +399,24 @@ class TetrisGame(Game):
         # Re-arm hard drop only after Space has been genuinely absent for
         # longer than any real OS auto-repeat gap (tetris-4 / tetris-5's
         # sibling bug: without this a held key chain-drops every piece).
-        if self.held(ord(' ')):
+        # This must NOT use latch_ms=0 like the shift/soft-drop cooldowns
+        # above: those read "did an event land on this exact tick" because
+        # they rate-cap a continuous action and a missed tick just delays
+        # the next repeat. This is the opposite kind of check -- "is the
+        # key still genuinely held" -- where curses' lack of a key-up event
+        # means the only signal is silence, and the OS's INITIAL autorepeat
+        # delay (250-660ms; see the class comment above _DEFAULT_LATCH_MS)
+        # can comfortably exceed both the default 180ms latch and even
+        # _HARD_DROP_REARM_MS on its own. A held key with no autorepeat
+        # event yet would then read as "released", re-arm, and hard-drop a
+        # second, uncontrolled piece the instant the real autorepeat event
+        # finally arrives. latch_ms=750 mirrors Dino's duck (also a held
+        # STATE where one falsely-released tick is unrecoverable) and
+        # comfortably exceeds the worst-case initial delay, at the cost of
+        # a longer minimum gap between two deliberate hard-drop taps -- a
+        # missed second tap is a minor annoyance; a surprise chain-drop is
+        # not.
+        if self.held(ord(' '), latch_ms=750):
             self._hard_drop_idle = 0
         else:
             self._hard_drop_idle += _TICK_MS
@@ -448,7 +472,7 @@ class TetrisGame(Game):
             self.safe_addstr(sy + 7 + r, px + c * 2, '[]',
                              curses.color_pair(nc) | curses.A_BOLD)
 
-        # A plain joined string here always overflowed at this class's own
+        # A plain joined string here always overflowed at this class's old
         # min_w=40 (73 chars into 38 usable columns), truncating mid-word
         # and losing Pause/Help/Quit entirely (INFRA-7). Passing a
         # priority-ordered list instead lets render.status_bar guarantee

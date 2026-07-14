@@ -1,7 +1,7 @@
 """The game catalog: icons, the menu list, the CLI alias map, and the title
 banner (play.py 3595-3635, 3769-3773).
 
-Imports the 14 game classes from arcade_games.games.*; this module is the
+Imports the 18 game classes from arcade_games.games.*; this module is the
 one place that knows about all of them, so net.py and menu.py/cli.py import
 the class list from here rather than reaching into arcade_games.games
 directly (keeps the dependency graph acyclic).
@@ -20,12 +20,17 @@ from .games.sokoban import SokobanGame
 from .games.reversi import ReversiGame
 from .games.frogger import FroggerGame
 from .games.connect4 import ConnectFourGame
+from .games.wordplay import WordplayGame
+from .games.blackjack import BlackjackGame
+from .games.roulette import RouletteGame
+from .games.slots import SlotsGame
 
 _ICONS = {'snake': '~o~', 'tetris': '[#]', '2048': ' 2K', 'dino': '/^\\',
           'breakout': '[=]', 'shooter': '/A\\', 'pong': '|O|',
           'flappy': '>>=', 'minesweeper_i': '[*]', 'pacman': 'C.M',
           'sokoban': '[$]', 'reversi': 'XO ', 'frogger': '@^^',
-          'connect4': 'OXO'}
+          'connect4': 'OXO', 'wordplay': '[?]', 'blackjack': '21!',
+          'roulette': '(0)', 'slots': '777'}
 
 _GAMES = [
     ("Snake",         "Classic snake - eat food, grow longer",     SnakeGame),
@@ -42,6 +47,10 @@ _GAMES = [
     ("Reversi",       "Outflank the AI on an 8x8 board",          ReversiGame),
     ("Frogger",       "Hop across road and river to the bays",    FroggerGame),
     ("Connect Four",  "Drop discs, get four in a row (vs AI)",    ConnectFourGame),
+    ("Wordplay",      "Guess the 5-letter word in 6 tries",       WordplayGame),
+    ("Blackjack",     "Beat the dealer, blackjack pays 3:2",       BlackjackGame),
+    ("Roulette",      "European wheel, place your bets",           RouletteGame),
+    ("Slots",         "Spin the reels, chase the jackpot",         SlotsGame),
 ]
 
 _TITLE = [
@@ -60,7 +69,12 @@ _GAME_MAP.update({'dino': DinoGame, '2048': Game2048,
                   'boxes': SokobanGame, 'reversi': ReversiGame,
                   'othello': ReversiGame, 'frogger': FroggerGame,
                   'frog': FroggerGame, 'connect4': ConnectFourGame,
-                  'connectfour': ConnectFourGame, 'c4': ConnectFourGame})
+                  'connectfour': ConnectFourGame, 'c4': ConnectFourGame,
+                  'wordplay': WordplayGame, 'word': WordplayGame,
+                  'wp': WordplayGame, 'blackjack': BlackjackGame,
+                  'bj': BlackjackGame, '21': BlackjackGame,
+                  'roulette': RouletteGame, 'slots': SlotsGame,
+                  'slot': SlotsGame})
 
 _NET_GAMES = [
     ('Reversi', ReversiGame, 'reversi'),

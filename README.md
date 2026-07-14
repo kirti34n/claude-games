@@ -2,13 +2,13 @@
 
 # arcade
 
-**Fourteen terminal games, and a friend to beat.**
+**Eighteen terminal games, and a friend to beat.**
 
 One command. No setup. Runs on Linux, macOS, WSL, and Windows.
 
 <p>
 <img src="https://img.shields.io/badge/python-3.8+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.8+">
-<img src="https://img.shields.io/badge/games-14-3fb950.svg" alt="14 games">
+<img src="https://img.shields.io/badge/games-18-3fb950.svg" alt="18 games">
 <img src="https://img.shields.io/badge/multiplayer-LAN-8884ff.svg" alt="LAN multiplayer">
 <img src="https://img.shields.io/badge/license-MIT-eab308.svg" alt="MIT">
 </p>
@@ -118,6 +118,24 @@ is real-time and best on the same Wi-Fi.
 </tr>
 </table>
 
+<h3>Word & casino</h3>
+<table>
+<tr>
+<td width="50%" align="center"><b>Wordplay</b> &nbsp;·&nbsp; <code>arcade wordplay</code> <sub>(also <code>word</code>, <code>wp</code>)</sub><br><sub>One 5-letter word a day. 6 guesses, a keyboard that remembers, and a streak to protect.</sub></td>
+<td width="50%" align="center"><b>Blackjack</b> &nbsp;·&nbsp; <code>arcade blackjack</code> <sub>(also <code>bj</code>, <code>21</code>)</sub><br><sub>6-deck shoe, dealer stands on soft 17, blackjack pays 3:2, split up to 3 times.</sub></td>
+</tr>
+<tr>
+<td width="50%" align="center"><b>Roulette</b> &nbsp;·&nbsp; <code>arcade roulette</code><br><sub>The European wheel (single zero, 2.70% house edge). Straight up, splits, dozens, and every even-money bet.</sub></td>
+<td width="50%" align="center"><b>Slots</b> &nbsp;·&nbsp; <code>arcade slots</code> <sub>(also <code>slot</code>)</sub><br><sub>3 reels, a real paytable, and a computed payout rate in the 92-96% band.</sub></td>
+</tr>
+</table>
+
+> **The chips are not real money.** Blackjack, Roulette, and Slots share a
+> virtual, in-app points balance (starts at 1000, with a small once-a-day
+> top-up if you ever hit zero). There is no purchase, no deposit, no
+> cash-out, and no way to turn a chip into anything of real-world value,
+> anywhere in this codebase. It is a toy, on purpose.
+
 <br>
 
 ## Controls
@@ -138,6 +156,12 @@ is real-time and best on the same Wi-Fi.
 Space Shooter, Pong, and Minesweeper ask for a difficulty. Snake, Dino, and
 Flappy speed up as you go; Tetris levels up. Quit any game and it resumes next
 time you open it.
+
+Wordplay and the casino games are turn-based and use their own keys instead of
+WASD: type letters and press Enter in Wordplay; H)it, S)tand, D)ouble, and
+X)split in Blackjack; arrows to pick a bet and F to spin in Roulette; Left/
+Right to set your bet and Space to pull the lever in Slots. Press `?` in any
+game for the full list.
 
 <br>
 
@@ -168,14 +192,16 @@ you can run yourself:
 arcade_games/
 ├── game.py         # the Game base class every game subclasses
 ├── config.py        # save files, high scores, config migration
-├── menu.py           # the curses main menu
-├── cli.py             # the plain-text `arcade cli` front-end
-├── net.py               # LAN multiplayer
+├── currency.py        # the shared virtual chip balance (casino games only)
+├── menu.py               # the curses main menu
+├── cli.py                 # the plain-text `arcade cli` front-end
+├── net.py                   # LAN multiplayer
 ├── render.py, theme.py, terminal.py    # drawing, color themes, terminal launch
 └── games/
     ├── snake.py, tetris.py, g2048.py, dino.py, breakout.py,
     │   shooter.py, pong.py, flappy.py, minesweeper.py, pacman.py,
-    │   sokoban.py, reversi.py, frogger.py, connect4.py
+    │   sokoban.py, reversi.py, frogger.py, connect4.py,
+    │   wordplay.py, blackjack.py, roulette.py, slots.py
 ```
 
 ```bash

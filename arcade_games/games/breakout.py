@@ -70,7 +70,16 @@ class BreakoutGame(Game):
             self._fit_bounds()
             return
 
-        self.area_w = min(52, self.w - 4)
+        self.brick_w = 4
+        # Round the play area's usable width down to a multiple of brick_w
+        # so a full row of bricks covers it with NO side gap. Before this,
+        # area_w=52 gave usable=50, 50//4=12 bricks (48 cols) centered with
+        # a leftover column of bare playfield on each side, through which
+        # the ball could reach the top wall (and trigger the paddle-halve)
+        # without ever breaking through a brick.
+        usable = min(52, self.w - 4) - 2
+        usable -= usable % self.brick_w
+        self.area_w = usable + 2
         self.area_h = min(28, self.h - 4)
         self.area_x = (self.w - self.area_w) // 2
         self.area_y = (self.h - self.area_h) // 2
@@ -95,7 +104,6 @@ class BreakoutGame(Game):
         self.tier_red = False
 
         self.wall = 1
-        self.brick_w = 4
         self.brick_rows = 4
         self.brick_start_y = 3
         self.score = 0
@@ -162,9 +170,20 @@ class BreakoutGame(Game):
         self.ball_dy = -1.0 / mag * self.ball_speed
 
     def _move_paddle(self):
-        if self.held(curses.KEY_LEFT, ord('a')):
+        # held() with the default 180ms latch: this is continuous motion
+        # (steering), the case the default latch is sized for. At this
+        # game's 25ms tick, an unlatched held() only saw a key on a
+        # fraction of ticks under realistic OS autorepeat, dropping the
+        # real paddle speed from 80 c/s to ~50 c/s.
+        #
+        # steer_dir() (not a plain if/elif held()) resolves a same-tick
+        # direction reversal instantly instead of driving the paddle the
+        # WRONG WAY for up to latch_ms after the player switches keys --
+        # see steer_dir()'s docstring in game.py.
+        d = self.steer_dir((curses.KEY_LEFT, ord('a')), (curses.KEY_RIGHT, ord('d')))
+        if d < 0:
             self.paddle_x = max(1, self.paddle_x - self.PADDLE_SPEED)
-        elif self.held(curses.KEY_RIGHT, ord('d')):
+        elif d > 0:
             self.paddle_x = min(self.area_w - self.paddle_w - 1,
                                 self.paddle_x + self.PADDLE_SPEED)
 
@@ -211,8 +230,16 @@ class BreakoutGame(Game):
             if self.paddle_hits >= 12:
                 self.tier_volley12 = True
             self._bump_speed_tier()
-            center = self.paddle_x + self.paddle_w / 2.0
-            hit_ratio = (nx - center) / (self.paddle_w / 2.0)
+            # The paddle occupies columns paddle_x..paddle_x+paddle_w-1, so
+            # its true center is paddle_x + (paddle_w-1)/2, not
+            # paddle_x + paddle_w/2 (half a cell further right). The old
+            # formula could never reach hit_ratio == +1.0 on the right edge,
+            # so a full-width paddle deflected right-edge hits at 53 degrees
+            # instead of the mirror of the left edge's 135 degrees, and a
+            # halved paddle was worse still (63 vs 135).
+            half_w = (self.paddle_w - 1) / 2.0
+            center = self.paddle_x + half_w
+            hit_ratio = (nx - center) / half_w if half_w > 0 else 0.0
             hit_ratio = max(-1.0, min(1.0, hit_ratio))
             self._serve_direction(hit_ratio)
             ny = float(self.paddle_y - 1)
@@ -228,8 +255,19 @@ class BreakoutGame(Game):
         if 0 <= br < self.brick_rows:
             bc = (int(nx) - self.brick_off_x) // self.brick_w
             if 0 <= bc < self.bricks_per_row and (br, bc) in self.bricks:
+                # Which face was entered: if the ball was already in this
+                # brick's ROW before this step but a different column, it
+                # came in from the side and dx must flip; otherwise (the
+                # common case) it approached vertically and dy flips, same
+                # as before. Without this a side entry kept its x direction
+                # and could ratchet sideways through an entire row.
+                old_row = int(self.ball_y) - self.brick_start_y
+                old_col = (int(self.ball_x) - self.brick_off_x) // self.brick_w
+                if old_row == br and old_col != bc:
+                    self.ball_dx = -self.ball_dx
+                else:
+                    self.ball_dy = -self.ball_dy
                 del self.bricks[(br, bc)]
-                self.ball_dy = -self.ball_dy
                 self.score += ROW_SCORES[br] if br < len(ROW_SCORES) else 1
                 if br == 0:
                     self.tier_red = True

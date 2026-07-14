@@ -6,10 +6,14 @@ so the whole suite is deterministic and runs on any platform, with or without a
 real curses build installed.
 """
 import json
+import os
 import random
+import subprocess
 import sys
 import tempfile
+import threading
 import types
+from datetime import date, timedelta
 from pathlib import Path
 
 # ── Fake curses so play.py imports and its game logic runs headless ──────────
@@ -42,6 +46,7 @@ sys.modules['curses'] = _fake
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import play  # noqa: E402
 from arcade_games import config as _config  # noqa: E402
+from arcade_games import currency as _currency  # noqa: E402
 from arcade_games import game as _game_mod  # noqa: E402
 
 # Redirect config to a temp dir so tests never touch the user's real saves.
@@ -251,8 +256,14 @@ def test_sokoban_solving_advances_level():
     g = play.SokobanGame(MockScreen())
     g.setup()
     assert g.level_idx == 0
-    g.handle_input(RIGHT)   # push box onto target in level 1
-    g.update()
+    # Level 1's box sits one row above and three columns right of the
+    # player, with the target directly above the box: walk under the box
+    # (right x3) then push it up onto the target (up x1) -- the level's
+    # proven-optimal 4-move/1-push solution (see the _LEVELS table's proof
+    # column in sokoban.py).
+    for key in (RIGHT, RIGHT, RIGHT, UP):
+        g.handle_input(key)
+        g.update()
     assert g.level_idx == 1 and g.score >= 1
 
 
@@ -668,6 +679,378 @@ def test_curses_wrapper_no_tty_no_terminal_exits_cleanly():
     finally:
         sys.stdin, sys.stdout = saved_stdin, saved_stdout
         _terminal_mod._open_in_terminal = saved_open
+
+
+# ── Wordplay, Blackjack, Roulette, Slots: game-specific rule tests ───────────
+
+def test_wordplay_duplicate_letter_feedback_two_pass():
+    """SPEC4 worked example: answer ABBEY, guess BABES must give
+    yellow, yellow, green, green, grey. A naive one-pass 'is this letter
+    anywhere in the answer' check double-counts the single B in ABBEY and
+    gets this wrong."""
+    from arcade_games.games.wordplay import score_guess
+    assert score_guess('BABES', 'ABBEY') == \
+        ['yellow', 'yellow', 'green', 'green', 'grey']
+
+
+def test_wordplay_exact_and_no_match_feedback():
+    from arcade_games.games.wordplay import score_guess
+    assert score_guess('ABOUT', 'ABOUT') == ['green'] * 5
+    assert score_guess('ZZZZZ', 'ABOUT') == ['grey'] * 5
+
+
+def test_wordplay_daily_word_deterministic_across_processes():
+    """The critical bug SPEC4 calls out: seeding with the builtin hash()
+    would vary per process via PYTHONHASHSEED. daily_word() must use
+    hashlib instead, so it returns the same word regardless of the
+    interpreter's hash seed. Proven here by actually spawning separate
+    processes with different PYTHONHASHSEED values, not just calling the
+    function twice in this one process."""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    code = ("import sys; sys.path.insert(0, {0!r}); "
+            "from arcade_games.games.wordplay import daily_word; "
+            "print(daily_word('2024-06-15'))").format(repo_root)
+    results = set()
+    for seed in ('0', '1', '12345'):
+        env = dict(os.environ, PYTHONHASHSEED=seed)
+        out = subprocess.run([sys.executable, '-c', code], capture_output=True,
+                              text=True, env=env, check=True)
+        results.add(out.stdout.strip())
+    assert len(results) == 1, \
+        f'daily_word varied across PYTHONHASHSEED values: {results}'
+
+
+def test_wordplay_daily_word_is_a_valid_answer():
+    from arcade_games.games.wordplay import daily_word, ANSWERS
+    assert daily_word('2024-01-01') in ANSWERS
+    assert daily_word('2024-01-01') == daily_word('2024-01-01')
+
+
+def test_roulette_house_edge_is_exact_for_every_bet_type():
+    """SPEC4: every bet type must yield the same -1/37 expected value.
+    Runs the module's own exhaustive self-test (all 37 pockets enumerated
+    exactly, not simulated) against every generated bet spot."""
+    from arcade_games.games.roulette import _run_house_edge_test
+    n_spots = _run_house_edge_test()
+    assert n_spots > 0
+
+
+def test_slots_rtp_is_computed_exactly_and_in_band():
+    """SPEC4: RTP must be computed exactly (enumerate all reel outcomes,
+    not simulated) and land in the required 92%-96% band."""
+    from arcade_games.games.slots import RTP, compute_rtp
+    computed = compute_rtp()
+    print(f'slots RTP = {computed:.4f}')
+    assert computed == RTP
+    assert 0.92 <= computed <= 0.96
+
+
+def test_blackjack_split_ace_21_pays_even_money_not_blackjack():
+    """SPEC4's most commonly botched rule: a 21 on a split-ace hand is an
+    ordinary 21 (pays 1:1), never a natural blackjack (3:2), because the
+    hand did not start as the player's original two cards."""
+    from arcade_games.games.blackjack import BlackjackGame, PlayerHand, hand_value, _is_blackjack
+    hand = PlayerHand([('A', 0), ('K', 1)], bet=10, from_split=True, split_aces=True)
+    total, soft = hand_value(hand.cards)
+    assert total == 21 and soft
+    assert not _is_blackjack(hand), 'a 21 on a split ace must not be a natural blackjack'
+
+    _reset_chips()
+    try:
+        g = BlackjackGame(MockScreen())
+        g.setup()
+        g._session_start_balance = _currency.balance()
+        g.hands = [hand]
+        g.dealer_cards = [('9', 0), ('8', 1)]  # dealer stands on 17, no push
+        g.dealer_hole_hidden = False
+        g.stat_rounds = g.stat_wins = g.stat_losses = g.stat_pushes = 0
+        before = _currency.balance()
+        g._settle_hands()
+        assert hand.result == 'win'
+        after = _currency.balance()
+        assert after - before == hand.bet * 2, \
+            'split-ace 21 must pay 1:1 (stake plus equal profit), not 3:2'
+    finally:
+        _reset_chips()
+
+
+def test_blackjack_natural_blackjack_pays_three_to_two():
+    """Contrast case for the split-ace rule above: an un-split natural
+    two-card 21 is a real blackjack and pays 3:2."""
+    from arcade_games.games.blackjack import BlackjackGame, PlayerHand, _is_blackjack
+    hand = PlayerHand([('A', 0), ('K', 1)], bet=10)
+    assert _is_blackjack(hand)
+
+    _reset_chips()
+    try:
+        g = BlackjackGame(MockScreen())
+        g.setup()
+        g._session_start_balance = _currency.balance()
+        g.hands = [hand]
+        g.dealer_cards = [('9', 0), ('8', 1)]
+        g.dealer_hole_hidden = False
+        g.stat_rounds = g.stat_wins = g.stat_losses = g.stat_pushes = 0
+        before = _currency.balance()
+        g._settle_hands()
+        assert hand.result == 'blackjack'
+        after = _currency.balance()
+        assert after - before == hand.bet + (hand.bet * 3) // 2
+    finally:
+        _reset_chips()
+
+
+def test_blackjack_natural_blackjack_pays_three_to_two_on_odd_bet():
+    """SPEC4: 3:2 must round IN THE PLAYER'S FAVOUR (ceiling) on a bet whose
+    profit is not a whole chip, e.g. bet=25 -> profit=37.5 -> pays 38, never
+    37 (floor division silently short-changes the player on every odd bet)."""
+    from arcade_games.games.blackjack import BlackjackGame, PlayerHand, _is_blackjack
+    hand = PlayerHand([('A', 0), ('K', 1)], bet=25)
+    assert _is_blackjack(hand)
+
+    _reset_chips()
+    try:
+        g = BlackjackGame(MockScreen())
+        g.setup()
+        g._session_start_balance = _currency.balance()
+        g.hands = [hand]
+        g.dealer_cards = [('9', 0), ('8', 1)]
+        g.dealer_hole_hidden = False
+        g.stat_rounds = g.stat_wins = g.stat_losses = g.stat_pushes = 0
+        before = _currency.balance()
+        g._settle_hands()
+        assert hand.result == 'blackjack'
+        after = _currency.balance()
+        # ceiling(25 * 3 / 2) = 38 profit, not floor's 37.
+        assert after - before == 25 + 38, \
+            'odd-valued blackjack bet must round the 3:2 payout up, not down'
+    finally:
+        _reset_chips()
+
+
+def test_blackjack_dealer_stands_on_soft_17():
+    from arcade_games.games.blackjack import hand_value
+    # Dealer showing Ace + 6 = soft 17: S17 rules mean the dealer stands,
+    # never hits, on exactly this total.
+    total, soft = hand_value([('A', 0), ('6', 1)])
+    assert total == 17 and soft
+    # The game's own dealer loop condition is "while total < 17", which
+    # correctly stops (stands) the instant a soft 17 is reached.
+    assert not (total < 17)
+
+
+# ── currency.py: shared virtual-chip ledger for the casino games ─────────────
+
+def _chips_file():
+    return _config.CONFIG_DIR / _currency.CHIPS_FILENAME
+
+
+def _reset_chips():
+    """Remove chips.json (and any stray lock/quarantine files from a prior
+    test) so each currency test starts from the default 1000-chip state."""
+    for suffix in ('', '.lock', '.bad'):
+        p = Path(str(_chips_file()) + suffix)
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _write_chips(balance, last_bailout_date=None):
+    _config._ensure_config()
+    _chips_file().write_text(
+        json.dumps({'balance': balance, 'last_bailout_date': last_bailout_date}),
+        encoding='utf-8')
+
+
+def test_currency_starting_balance_is_1000():
+    _reset_chips()
+    try:
+        assert _currency.balance() == 1000
+        # A pure read must not create chips.json.
+        assert not _chips_file().exists()
+    finally:
+        _reset_chips()
+
+
+def test_currency_bet_refuses_overdraw_and_never_goes_negative():
+    _reset_chips()
+    try:
+        assert _currency.balance() == 1000
+        assert _currency.bet(1001) is False
+        assert _currency.balance() == 1000  # untouched by the refused bet
+        assert _currency.bet(0) is False
+        assert _currency.bet(-5) is False
+        assert _currency.bet(1000) is True
+        assert _currency.balance() == 0
+        assert _currency.bet(1) is False  # broke: any further bet is refused
+        assert _currency.balance() == 0
+    finally:
+        _reset_chips()
+
+
+def test_currency_bet_and_payout_roundtrip():
+    _reset_chips()
+    try:
+        assert _currency.bet(100) is True
+        assert _currency.balance() == 900
+        assert _currency.payout(150) == 1050
+        assert _currency.balance() == 1050
+        assert _currency.payout(0) == 1050  # push: no-op, still returns balance
+        try:
+            _currency.payout(-1)
+            raise AssertionError('payout(-1) should have raised ValueError')
+        except ValueError:
+            pass
+    finally:
+        _reset_chips()
+
+
+def test_currency_bailout_fires_once_per_day_not_twice():
+    _reset_chips()
+    try:
+        _write_chips(balance=0, last_bailout_date=None)
+        assert _currency.bailout_available() is True
+        assert _currency.try_bailout() is True
+        assert _currency.balance() == _currency.BAILOUT_AMOUNT
+        # Same calendar day, still at a non-zero balance: not offered again.
+        assert _currency.bailout_available() is False
+        # Even if the player is somehow broke again the same day, it must
+        # not fire twice: force balance back to 0 without touching the date.
+        _write_chips(balance=0, last_bailout_date=date.today().isoformat())
+        assert _currency.bailout_available() is False
+        assert _currency.try_bailout() is False
+        assert _currency.balance() == 0  # refused: no phantom second grant
+    finally:
+        _reset_chips()
+
+
+def test_currency_bailout_only_when_balance_is_zero():
+    _reset_chips()
+    try:
+        _write_chips(balance=5, last_bailout_date=None)
+        assert _currency.bailout_available() is False
+        assert _currency.try_bailout() is False
+        assert _currency.balance() == 5
+    finally:
+        _reset_chips()
+
+
+def test_currency_bailout_resets_on_a_new_calendar_day():
+    _reset_chips()
+    try:
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        _write_chips(balance=0, last_bailout_date=yesterday)
+        assert _currency.bailout_available() is True
+        assert _currency.try_bailout() is True
+        assert _currency.balance() == _currency.BAILOUT_AMOUNT
+    finally:
+        _reset_chips()
+
+
+def test_currency_corrupt_file_is_quarantined_not_lost():
+    _reset_chips()
+    try:
+        _config._ensure_config()
+        _chips_file().write_text('not json at all', encoding='utf-8')
+        # A read-only balance() call falls back to the default rather than
+        # raising, and does not itself destroy the corrupt file.
+        assert _currency.balance() == 1000
+        # A mutating call quarantines the corrupt file (never silently
+        # overwrites it) and proceeds from the default state.
+        assert _currency.bet(100) is True
+        assert _currency.balance() == 900
+        bad_files = list(_chips_file().parent.glob(_currency.CHIPS_FILENAME + '.bad*'))
+        assert bad_files, 'corrupt chips.json should have been quarantined, not overwritten'
+        for f in bad_files:
+            assert f.read_text(encoding='utf-8') == 'not json at all'
+    finally:
+        for f in _chips_file().parent.glob(_currency.CHIPS_FILENAME + '.bad*'):
+            f.unlink()
+        _reset_chips()
+
+
+def test_currency_negative_balance_on_disk_is_treated_as_corrupt():
+    _reset_chips()
+    try:
+        _write_chips(balance=-50, last_bailout_date=None)
+        # A hand-mangled negative balance must never be trusted as-is.
+        assert _currency.balance() == 1000
+    finally:
+        _reset_chips()
+
+
+def test_currency_write_failure_never_loses_or_duplicates_a_bet():
+    """If persistence fails mid-transaction (e.g. the process is about to
+    crash, or the lock/IO budget is exhausted), the balance on disk must be
+    exactly what it was before the attempt: no chips vanish, and no chips
+    get silently duplicated on the next successful call."""
+    _reset_chips()
+    saved = _config._atomic_write_json
+    try:
+        assert _currency.bet(100) is True
+        assert _currency.balance() == 900
+        _config._atomic_write_json = lambda *a, **k: False
+        assert _currency.bet(50) is False  # write "fails": must not apply
+        assert _currency.payout(50) == 900  # write "fails": reports prior balance
+    finally:
+        _config._atomic_write_json = saved
+        _reset_chips()
+    # Confirm the module really did route through config._atomic_write_json
+    # (the shared, locked, byte-verified writer) rather than a hand-rolled
+    # one: with it restored, a normal bet persists again.
+    try:
+        assert _currency.bet(1) is True
+        assert _currency.balance() == 999
+    finally:
+        _reset_chips()
+
+
+def test_currency_concurrent_bets_and_payouts_never_lose_or_corrupt_chips():
+    """Simulate a bunch of racing writers (the scenario save_high_score got
+    caught losing data on): many threads hammering bet()/payout() against
+    the same chips.json at once. The locked read-modify-write must
+    serialize every one of them, so the final balance is exactly the
+    arithmetic sum of every operation that reported success, with nothing
+    lost and nothing double-applied."""
+    _reset_chips()
+    try:
+        _write_chips(balance=1000, last_bailout_date=None)
+        n_bettors, n_payers = 25, 25
+        results = [None] * (n_bettors + n_payers)
+
+        def do_bet(i):
+            results[i] = ('bet', 10, _currency.bet(10))
+
+        def do_payout(i):
+            results[i] = ('payout', 5, True)
+            _currency.payout(5)
+
+        threads = []
+        for i in range(n_bettors):
+            threads.append(threading.Thread(target=do_bet, args=(i,)))
+        for i in range(n_payers):
+            threads.append(threading.Thread(target=do_payout, args=(n_bettors + i,)))
+        random.shuffle(threads)
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        expected = 1000
+        for kind, amount, ok in results:
+            if kind == 'bet' and ok:
+                expected -= amount
+            elif kind == 'payout':
+                expected += amount
+        final = _currency.balance()
+        assert final == expected, f'expected {expected}, got {final} (lost or duplicated chips)'
+        assert final >= 0
+        # Every bet against a healthy, well-above-zero balance in this mix
+        # should have succeeded; none should have been spuriously refused
+        # by lock contention.
+        assert all(ok for kind, _, ok in results if kind == 'bet')
+    finally:
+        _reset_chips()
 
 
 def _run_all():

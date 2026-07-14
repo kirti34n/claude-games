@@ -19,16 +19,40 @@ class ShooterGame(Game):
     _BOSS_ART = [' [===] ', '/|||||\\', ' \\___/ ']
 
     # Pacing table (SPEC.md section 2): 33 ms / 30 Hz tick, ship 1 cell/tick,
-    # fire cooldown 180 ms, player bullet 1.5 c/t, enemy bullet 0.5 c/t (a
-    # strict 3:1 ratio), wave ramp on spawn rate AND enemy speed.
+    # fire cooldown 180 ms, enemy bullet 0.5 c/t, wave ramp on spawn rate AND
+    # enemy speed.
     _TICK_MS = 33
     _FIRE_COOLDOWN_MS = 180
     _POWERUP_MS = 10000
     _WAVE_MSG_MS = 1500
-    _PLAYER_BULLET_DY = 1.5
+    # Player bullets are purely vertical (fixed x once fired) and the boss
+    # patrols horizontally the whole time a bullet is in flight, so hitting
+    # it requires leading it by (transit ticks * _BOSS_SPEED) columns. At
+    # the old 1.5 c/t this was 15-30+ columns on a normal terminal -- more
+    # than TWICE the boss's own 7-column width, with no way to discover the
+    # exact number and no telegraph showing it (correctness re-audit
+    # finding: a bot aiming at the boss's current column needed 4-5 MINUTES
+    # to kill a wave-5 boss; one that happened to lead it by exactly the
+    # right amount killed it in under 10s -- there was no middle ground).
+    # 3.5 c/t keeps the required lead small enough, at ordinary terminal
+    # sizes, that tracking the boss and firing near it actually connects,
+    # and draw() now paints a live "aim here" marker computed from this
+    # exact constant (see the boss-aim block below) so the lead is always
+    # discoverable instead of a secret number, no matter how tall the
+    # terminal is.
+    _PLAYER_BULLET_DY = 3.5
     _ENEMY_BULLET_DY = 0.5
     _BOSS_SPEED = 0.66
     _MAX_PLAYER_BULLETS = 4
+    # Per-type vertical descent multiplier, matching the y-increments used
+    # in update() below. Shared with _enemy_fire_delay() and _spawn_enemy()
+    # so both can reason about how long a given enemy is actually on screen.
+    _DESCENT_FACTOR = {'basic': 1.0, 'zigzag': 1.0, 'diver': 1.5, 'tank': 0.6}
+    # Baseline ship speed (cells/tick) used when deciding whether a spawn
+    # point is reachable -- deliberately the UN-boosted speed (see
+    # _spawn_enemy), so a spawn is guaranteed interceptable even without the
+    # SPEED powerup.
+    _SHIP_BASE_SPEED = 1
     # Bumped whenever get_save_data()'s schema changes. setup() only trusts
     # a save whose stamp matches: blind setattr from an older/newer schema
     # (missing 'fire_cooldown'/'anim'/'fire_timer', ...) used to load fine
@@ -53,7 +77,7 @@ class ShooterGame(Game):
                     continue
                 setattr(self, k, v)
             self.difficulty = diff
-            self.lives = {'easy': 5, 'medium': 3, 'hard': 2}[diff]
+            self.lives = {'easy': 5, 'medium': 4, 'hard': 3}[diff]
             self.base_enemy_speed = {'easy': 0.35, 'medium': 0.55, 'hard': 0.8}[diff]
             self.base_spawn_rate = {'easy': 1250, 'medium': 900, 'hard': 600}[diff]
             self.boss_fire_rate = {'easy': 1000, 'medium': 600, 'hard': 360}[diff]
@@ -61,7 +85,12 @@ class ShooterGame(Game):
             self._fit_bounds()
             return
         diff = self.difficulty
-        self.lives = {'easy': 5, 'medium': 3, 'hard': 2}[diff]
+        # medium/hard bumped from 3/2 to 4/3 (correctness re-audit finding:
+        # the boss/wave ramp was unreachable -- reaching wave 5 needs ~58
+        # kills while also dodging enemy bullets, and 3/2 lives left almost
+        # no margin for error even after the column-leak fix below stopped
+        # penalizing a miss that was never going to hit the ship).
+        self.lives = {'easy': 5, 'medium': 4, 'hard': 3}[diff]
         self.base_enemy_speed = {'easy': 0.35, 'medium': 0.55, 'hard': 0.8}[diff]
         self.base_spawn_rate = {'easy': 1250, 'medium': 900, 'hard': 600}[diff]
         self.boss_fire_rate = {'easy': 1000, 'medium': 600, 'hard': 360}[diff]
@@ -91,14 +120,24 @@ class ShooterGame(Game):
         # only x (as before) left enemy/bullet y untouched, so a save from a
         # taller terminal could resume with enemies already past
         # self.h - 3 and cost a life on the very first tick (shooter-12).
-        self.player_x = max(2, min(self.w - 2, self.player_x))
+        # Bounds are 3..w-4, not 2..w-2: the ship's own glyph ('/A\', 3
+        # wide) only needs 2..w-2, but the SHIELD glyph drawn around it
+        # ('(===)', 5 wide) needs 2 columns of clearance on each side, and
+        # the widest of everything the ship can display is what must stay
+        # inside the playfield box's interior (columns 1..w-2) -- otherwise
+        # the shield overwrites the box border at either edge.
+        self.player_x = max(3, min(self.w - 4, self.player_x))
         if self.boss:
             self.boss['x'] = max(1, min(self.w - 8, self.boss['x']))
-            self.boss['y'] = max(1, min(self.h - 6, self.boss.get('y', 2)))
+            # 3, not 1: the playfield box's top border is row 2 (see
+            # draw()), so row 3 is the first interior row. y=1 or y=2 drew
+            # the boss's art overlapping or above the border.
+            self.boss['y'] = max(3, min(self.h - 6, self.boss.get('y', 3)))
         for e in self.enemies:
             e['x'] = max(0, min(self.w - 4, e['x']))
             e['base_x'] = max(0, min(self.w - 4, e.get('base_x', e['x'])))
-            e['y'] = max(1, min(self.h - 4, e['y']))
+            # Same border reasoning as the boss's y clamp just above.
+            e['y'] = max(3, min(self.h - 4, e['y']))
         for b in self.bullets:
             b['x'] = max(0, min(self.w - 1, b['x']))
             b['y'] = max(0, min(self.h - 1, b['y']))
@@ -180,11 +219,42 @@ class ShooterGame(Game):
             if len(self.bullets) < self._MAX_PLAYER_BULLETS:
                 self.bullets.append({'x': float(self.player_x + 2), 'y': float(by + 1)})
 
-    def _enemy_fire_delay(self):
-        # Firing frequency also ramps with wave, on top of speed/spawn rate.
-        lo = max(400, 1400 - self.wave * 70)
-        hi = max(lo + 400, 2400 - self.wave * 90)
-        return random.randint(lo, hi)
+    def _enemy_lifetime_ticks(self, etype):
+        factor = self._DESCENT_FACTOR.get(etype, 1.0)
+        descent = max(0.01, self.enemy_speed * factor)
+        # h - 6, not h - 5: an enemy now spawns at y=3.0 (was 2.0, moved to
+        # clear the playfield border -- see _spawn_enemy) and still leaks
+        # at row h-3, so its total travel distance shrank by that same 1
+        # row.
+        return max(1.0, (self.h - 6) / descent)
+
+    def _enemy_fire_delay(self, etype='basic'):
+        # Firing frequency ramps with wave, on top of speed/spawn rate, but
+        # must never be scaled longer than the enemy's own time on screen --
+        # the un-scaled 1400-2400ms floor/ceiling used to comfortably
+        # outlast a fast-moving enemy's entire transit (250-1900ms), so the
+        # fire branch in update() could never run before the enemy despawned
+        # or leaked. Bounding both ends to fractions of this enemy's actual
+        # lifetime guarantees every enemy that survives long enough to be a
+        # threat gets at least one shot off.
+        #
+        # hi/lo must have NO absolute floor that can exceed lifetime_ms: an
+        # earlier version floored hi at 300ms / lo at 200ms, which silently
+        # re-introduced the exact same numerically-dead-fire bug for any
+        # enemy whose lifetime drops below those floors -- e.g. a hard-mode
+        # wave-25+ diver (enemy_speed capped at 3x base, descent factor
+        # 1.5) lives only ~175ms, so the old max(300.0, ...) floor still
+        # produced a 300ms-plus delay that outlasted the enemy every time.
+        # The only floor here is one tick (delays shorter than one tick
+        # are meaningless, since fire_timer is checked once per tick), and
+        # it is itself capped at lifetime_ms so it can never exceed it.
+        lifetime_ms = self._enemy_lifetime_ticks(etype) * self._TICK_MS
+        wave_hi = max(400, 2400 - self.wave * 90)
+        wave_lo = max(200, 1400 - self.wave * 70)
+        one_tick = min(self._TICK_MS, lifetime_ms)
+        hi = max(one_tick, min(wave_hi, lifetime_ms * 0.75))
+        lo = max(0.0, min(wave_lo, lifetime_ms * 0.30, hi))
+        return random.randint(int(lo), int(hi))
 
     def _spawn_enemy(self):
         if self.boss or self.w < 9:
@@ -192,16 +262,33 @@ class ShooterGame(Game):
         types = ['basic'] * 50 + ['zigzag'] * 25 + ['diver'] * 15 + ['tank'] * 10
         etype = random.choice(types)
         hp = 3 if etype == 'tank' else 1
-        x = float(random.randint(3, max(3, self.w - 6)))
+        # Clamp the spawn column to one the ship can PHYSICALLY reach before
+        # this enemy finishes its descent, using the un-boosted ship speed
+        # as the worst case and shaving a few ticks off for reaction time.
+        # Before this, x was uniform over the whole (3, w-6) span regardless
+        # of how little time an enemy spends on screen, so a meaningful
+        # fraction of spawns were mathematically un-interceptable and every
+        # one of those cost a life for free.
+        lifetime = self._enemy_lifetime_ticks(etype)
+        reach = max(4, int((lifetime - 3) * self._SHIP_BASE_SPEED))
+        lo = max(3, int(self.player_x - reach))
+        hi = min(max(3, self.w - 6), int(self.player_x + reach))
+        if lo > hi:
+            lo, hi = 3, max(3, self.w - 6)
+        x = float(random.randint(int(lo), int(hi)))
+        # y=3.0, not 2.0: the playfield box's top border is row 2 (see
+        # draw()), so every spawn at row 2 punched a visible hole in it.
+        # Row 3 is the first interior row.
         self.enemies.append({
-            'x': x, 'base_x': x, 'y': 2.0,
+            'x': x, 'base_x': x, 'y': 3.0, 'prev_y': 3.0,
             'type': etype, 'hp': hp, 'anim': 0,
-            'fire_timer': self._enemy_fire_delay(),
+            'fire_timer': self._enemy_fire_delay(etype),
         })
 
     def _spawn_boss(self):
         self.boss = {
-            'x': float(self.w // 2 - 3), 'y': 2,
+            # y=3, not 2: same border reasoning as the enemy spawn above.
+            'x': float(self.w // 2 - 3), 'y': 3,
             'hp': 10 + self.wave * 5,
             'max_hp': 10 + self.wave * 5,
             'fire_timer': self.boss_fire_rate, 'dir': 1,
@@ -229,14 +316,28 @@ class ShooterGame(Game):
         # Continuous ship steering: at most one step per tick, reading keys
         # collected since the last update() instead of moving inside
         # handle_input() (which would tie speed to OS key-repeat).
+        # held() with the default 180ms latch (not the raw event-only
+        # edge): at this game's 33ms tick, an unlatched held() only sees a
+        # key on a fraction of ticks under realistic OS autorepeat,
+        # dropping the real ship speed toward ~25 c/s instead of the
+        # intended 30 c/s -- and _spawn_enemy's reachability budget above
+        # assumes the full, undamped speed.
+        #
+        # steer_dir(), not two independent `if held(...)` checks: two
+        # independent ifs both fire during the up-to-180ms window after a
+        # reversal where the stale opposite key is still latched AND the
+        # fresh key has already registered, so the ship's x moves by
+        # (+speed) and (-speed) in the same tick and nets to a freeze.
+        # steer_dir() clears the stale side's latch the instant a fresh
+        # opposite-direction event arrives, so only one side is ever true.
         speed = 2 if self.speed_boost > 0 else 1
-        if self.held(curses.KEY_LEFT, ord('a')):
-            self.player_x = max(2, self.player_x - speed)
-        if self.held(curses.KEY_RIGHT, ord('d')):
-            self.player_x = min(self.w - 2, self.player_x + speed)
+        d = self.steer_dir((curses.KEY_LEFT, ord('a')), (curses.KEY_RIGHT, ord('d')))
+        if d < 0:
+            self.player_x = max(3, self.player_x - speed)
+        elif d > 0:
+            self.player_x = min(self.w - 4, self.player_x + speed)
 
-        # Move bullets. 1.5 c/t player vs 0.5 c/t enemy keeps the canonical
-        # 3:1 speed ratio.
+        # Move bullets.
         self.bullets = [{'x': b['x'], 'y': b['y'] - self._PLAYER_BULLET_DY}
                         for b in self.bullets if b['y'] > 0]
         new_eb = []
@@ -252,6 +353,7 @@ class ShooterGame(Game):
         # Move enemies and let them fire: every regular type now shoots,
         # loosely aimed toward the ship's current column.
         for e in self.enemies:
+            e['prev_y'] = e['y']
             e['anim'] += 1
             if e['type'] == 'basic':
                 e['y'] += self.enemy_speed
@@ -277,7 +379,7 @@ class ShooterGame(Game):
                     dx = 0.0
                 self.enemy_bullets.append({'x': e['x'] + 1, 'y': e['y'] + 1,
                                            'dx': dx, 'dy': self._ENEMY_BULLET_DY})
-                e['fire_timer'] = self._enemy_fire_delay()
+                e['fire_timer'] = self._enemy_fire_delay(e['type'])
 
         # Boss movement and shooting.
         if self.boss:
@@ -299,7 +401,20 @@ class ShooterGame(Game):
             hit = False
             if self.boss:
                 bx, by = self.boss['x'], self.boss['y']
-                if by <= b['y'] <= by + 2 and bx <= b['x'] <= bx + 6:
+                # Swept vertical test, same reasoning (and the same
+                # reconstruction trick) as the enemy check just below: b['y']
+                # here is already POST-movement for this tick (the move at
+                # the top of update() already applied), so b['y'] +
+                # _PLAYER_BULLET_DY reconstructs where the bullet STARTED
+                # this tick. A plain point test against the boss's fixed
+                # 3-row band (by..by+2) tunnels clean through whenever
+                # _PLAYER_BULLET_DY exceeds that band's height in a single
+                # tick -- which a faster bullet (the fix for the boss being
+                # unhittable without an exact multi-column lead) makes the
+                # normal case, not a rare edge case.
+                b_lo = min(b['y'], b['y'] + self._PLAYER_BULLET_DY)
+                b_hi = max(b['y'], b['y'] + self._PLAYER_BULLET_DY)
+                if b_hi >= by - 1 and b_lo <= by + 3 and bx <= b['x'] <= bx + 6:
                     self.boss['hp'] -= 1
                     self._add_particles(b['x'], b['y'])
                     if self.boss['hp'] <= 0:
@@ -308,14 +423,32 @@ class ShooterGame(Game):
                         self.boss = None
                         self.wave += 1
                         self.kills = 0
-                        self.kills_needed = 10 + self.wave * 2
+                        # 8, not the original 10: see the wave-progression
+                        # branch below for why (same formula, kept in sync).
+                        self.kills_needed = 8 + self.wave * 2
                         self.wave_msg_timer = self._WAVE_MSG_MS
                         self._update_wave_params()
                     hit = True
             if not hit:
+                # Swept vertical test, same idea as Dino's obstacle sweep:
+                # a plain point test (abs(b['y']-e['y'])<=1) is a 2-row-tall
+                # window, but the bullet (_PLAYER_BULLET_DY c/t) plus the
+                # enemy's own descent can close more than 2 rows in a
+                # single tick from
+                # medium-wave basics onward and on every diver, so a
+                # dead-centre shot could step clean over the enemy without
+                # the two positions ever landing within 1 of each other on
+                # the SAME tick. Comparing the bullet's this-tick travel
+                # span against the enemy's this-tick travel span (both
+                # already advanced above) catches a crossing that happened
+                # between ticks, not just one that happens to land on one.
+                b_lo = min(b['y'], b['y'] + self._PLAYER_BULLET_DY)
+                b_hi = max(b['y'], b['y'] + self._PLAYER_BULLET_DY)
                 for e in self.enemies:
                     art_w = len(self._ENEMY_ART[e['type']])
-                    if (abs(b['y'] - e['y']) <= 1 and
+                    e_lo = min(e['y'], e.get('prev_y', e['y']))
+                    e_hi = max(e['y'], e.get('prev_y', e['y']))
+                    if (b_hi >= e_lo - 1 and b_lo <= e_hi + 1 and
                             e['x'] <= b['x'] <= e['x'] + art_w - 1):
                         e['hp'] -= 1
                         if e['hp'] <= 0:
@@ -354,20 +487,37 @@ class ShooterGame(Game):
                 new_eb2.append(b)
         self.enemy_bullets = new_eb2
 
-        # Any enemy that reaches the ship's row costs a life, whether or
-        # not it lines up with the ship: letting one slip past the bottom
-        # used to be a free despawn, which made cornering trivially safe.
+        # An enemy that reaches the ship's row costs a life only if it is
+        # actually in the ship's way -- i.e. it would have collided with
+        # the ship, the same column test used for enemy bullets just
+        # above. A blanket "any leak anywhere on the row costs a life"
+        # (the previous rule) made the whole wave ramp unreachable: it
+        # requires killing essentially every one of the ~58 consecutive
+        # enemies needed to reach the first boss (wave 5) while
+        # simultaneously dodging every enemy bullet, and dodging means
+        # moving away from a column, which is exactly what makes an
+        # enemy in that column unreachable in time. An enemy that reaches
+        # the bottom nowhere near the ship never threatened it and should
+        # not be able to end the run; the reachability budget in
+        # _spawn_enemy already guarantees every enemy COULD be
+        # intercepted, so choosing to dodge a bullet instead of a kill
+        # is now a real, survivable tradeoff instead of a guaranteed
+        # life loss.
         survivors = []
         for e in self.enemies:
             if e['y'] >= self.h - 3:
-                if self.shield:
-                    self.shield = False
-                else:
-                    self.lives -= 1
-                    self._add_particles(px, py, 5)
-                    if self.lives <= 0:
-                        self.game_over = True
-                        return
+                art_w = len(self._ENEMY_ART[e['type']])
+                if e['x'] - 1 <= px <= e['x'] + art_w:
+                    if self.shield:
+                        self.shield = False
+                    else:
+                        self.lives -= 1
+                        self._add_particles(px, py, 5)
+                        if self.lives <= 0:
+                            self.game_over = True
+                            return
+                # else: missed the ship entirely -- despawns for free,
+                # same as a dodged bullet.
             else:
                 survivors.append(e)
         self.enemies = survivors
@@ -400,11 +550,16 @@ class ShooterGame(Game):
             self._spawn_enemy()
             self.spawn_timer = self.spawn_rate
 
-        # Wave progression.
+        # Wave progression. Was "10 + wave*2" (total 58 kills to reach the
+        # wave-5 boss); trimmed to "8 + wave*2" (total 52) as part of the
+        # winnability fix -- a modest cut on its own, but combined with the
+        # column-based leak rule (an off-column miss no longer costs a
+        # life) and the medium/hard life bump above, it meaningfully widens
+        # the margin without trivializing the ramp.
         if not self.boss and self.kills >= self.kills_needed:
             self.wave += 1
             self.kills = 0
-            self.kills_needed = 10 + self.wave * 2
+            self.kills_needed = 8 + self.wave * 2
             self.wave_msg_timer = self._WAVE_MSG_MS
             self._update_wave_params()
             if self.wave % 5 == 0:
@@ -431,6 +586,14 @@ class ShooterGame(Game):
             info += '   ' + ' '.join(tags)
         self.safe_addstr(1, 2, info, curses.color_pair(3) | curses.A_BOLD)
 
+        # Playfield frame: previously the only drawn lines were the header
+        # text and the full-width status bar, so the field itself had no
+        # visible boundary at all -- distinct from every other real-time
+        # game in the collection, which all have a border or (Dino) a
+        # ground rule marking the playable area.
+        if self.h > 4:
+            self.draw_box(2, 0, self.h - 3, self.w, curses.color_pair(4))
+
         # Wave announcement
         if self.wave_msg_timer > 0:
             self.center_text(self.h // 3, f'  WAVE {self.wave}  ',
@@ -455,6 +618,24 @@ class ShooterGame(Game):
             bar = '#' * filled + '-' * (hp_w - filled)
             self.center_text(by + 4, f'[{bar}]', curses.color_pair(2))
 
+            # Aim marker: a bullet fired THIS tick is fixed at whatever
+            # column it launches from, but the boss keeps moving for the
+            # whole time the bullet is in flight, so "aim at where the
+            # boss is right now" only connects by luck (correctness
+            # re-audit finding -- see the _PLAYER_BULLET_DY comment). This
+            # is the exact column a bullet fired right now needs to launch
+            # from to land on the boss, computed from the same constants
+            # update() uses for the real collision -- not a hint, the
+            # actual answer -- so the fight is winnable by tracking a
+            # marker instead of memorizing an unlisted number.
+            fire_y = float(self.h - 4)
+            transit = max(1.0, (fire_y - self.boss['y']) / self._PLAYER_BULLET_DY)
+            drift = transit * self._BOSS_SPEED * self.boss['dir']
+            aim_col = int(round(self.boss['x'] + 3 + drift))
+            aim_col = max(1, min(self.w - 2, aim_col))
+            self.safe_addstr(self.h - 5, aim_col, 'v',
+                             curses.color_pair(3) | curses.A_BOLD | curses.A_BLINK)
+
         # Bullets
         for b in self.bullets:
             self.safe_addstr(int(b['y']), int(b['x']), '|',
@@ -478,7 +659,12 @@ class ShooterGame(Game):
         self.safe_addstr(self.h - 3, self.player_x - 1, '/A\\',
                          curses.color_pair(1) | curses.A_BOLD)
         if self.shield:
-            self.safe_addstr(self.h - 2, self.player_x - 2, '(===)',
+            # Row h-4 (just above the ship), not h-2: the playfield box's
+            # bottom border is row h-2 (draw_box(2, 0, h-3, w) below spans
+            # rows 2..h-2), so the 5-wide shield glyph at h-2 always drew
+            # on top of the border, and clipped past the right edge
+            # whenever the ship was also near max x.
+            self.safe_addstr(self.h - 4, self.player_x - 2, '(===)',
                              curses.color_pair(4) | curses.A_BOLD)
 
         self.draw_status_bar('A/D:Move Spc:Fire ?:Help Esc:Quit')

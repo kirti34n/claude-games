@@ -36,7 +36,13 @@ from .. import config
 class PacManGame(Game):
     name = "pacman"
     min_h = 24
-    min_w = 30
+    # The maze itself is only 27 columns, but the header (title, level,
+    # score, high score, lives) does not scale with it -- at the old
+    # min_w=30 the header was 42+ chars and got silently clipped, losing
+    # the lives counter entirely (the player could not see how many lives
+    # they had left anywhere between 30 and ~41 columns). 50 comfortably
+    # fits the compacted header (see draw()) through a 5-digit score.
+    min_w = 50
 
     _MAZE = [
         "###########################",
@@ -96,13 +102,35 @@ class PacManGame(Game):
     # immediately beside it, reachable via the normal corridor.
     _FRUIT_POS = (14, 14)
 
-    PAC_TILES_PER_SEC = 7.58   # arcade-exact
+    PAC_TILES_PER_SEC = 7.58   # arcade-exact: 80% of the shared reference speed
+    # The arcade's ghost/Pac-Man speed percentages (Dossier) are both
+    # fractions of the SAME reference "100%" tile speed, not of each
+    # other: Pac-Man runs at 80% of it (giving PAC_TILES_PER_SEC above)
+    # and ghosts run at 75-95% of that SAME reference. Multiplying the
+    # ghost fraction against Pac's own already-80%-scaled speed (the old
+    # code) made every ghost ~20% slower than canon at every level, so a
+    # ghost directly behind Pac-Man could never catch him -- only
+    # interception could ever kill you.
+    GHOST_ARCADE_MAX_TPS = PAC_TILES_PER_SEC / 0.8   # ~9.475 tiles/sec
     GHOST_BASE_FRAC = 0.75
     GHOST_MAX_FRAC = 0.95
     GHOST_FRAC_STEP = 0.01     # +1%/level toward the 95% cap
     FRIGHT_FRAC = 0.5
     TUNNEL_FRAC = 0.4
     EATEN_FRAC = 2.0
+    # Dot-eating slowdown (Dossier): Pac-Man runs a little slower while
+    # actively clearing pellets (71% of the reference speed vs his normal
+    # 80%), not the same speed everywhere. Without this Pac-Man was faster
+    # than every ghost at every level in EVERY corridor, dotted or not,
+    # removing one of the arcade's real sources of endgame pressure.
+    DOT_SPEED_FRAC = 0.71 / 0.80
+    # Cruise Elroy (Dossier): once few dots remain, Blinky speeds up and,
+    # in Elroy-2, chases Pac-Man directly even during a scatter phase.
+    # Fractions of the level's total dot count.
+    ELROY1_DOTS_FRAC = 0.20
+    ELROY2_DOTS_FRAC = 0.10
+    ELROY1_FRAC_BONUS = 0.05
+    ELROY2_FRAC_BONUS = 0.10
     STARVE_TICKS = 150         # anti-starvation ghost release (canon ~4s; tuned to 3s)
     FRUIT_TICKS = 500          # ~10s a bonus fruit stays on screen
     DYING_TICKS = 60           # ~1.2s death animation
@@ -142,6 +170,7 @@ class PacManGame(Game):
             self._clock = saved.get('clock', 0)
             self.dots_left = saved['dots_left']
             self.dots_eaten_level = saved.get('dots_eaten_level', 0)
+            self._level_total_dots = self.dots_left + self.dots_eaten_level
             self.starve_timer = saved.get('starve_timer', 0)
             self.mode = saved.get('mode', 'scatter')
             self.mode_phase = saved.get('mode_phase', 0)
@@ -174,6 +203,7 @@ class PacManGame(Game):
         self.fruit_spawned_170 = False
         self.extra_life_awarded = False
         self.dots_left = sum(1 for row in self.maze for c in row if c in ('.', 'O'))
+        self._level_total_dots = self.dots_left  # for Cruise Elroy thresholds
         # Reseeded identically per level (see class docstring) so ghost
         # behavior is deterministic and patternable, not global-RNG mush.
         self._rng = random.Random(1000 + self.level)
@@ -245,12 +275,66 @@ class PacManGame(Game):
     def get_timeout(self):
         return 20  # 50 Hz simulation tick (see SPEC pacing table)
 
+    def _pac_frac(self):
+        """Pac-Man's own fraction of the shared reference speed, from the
+        SAME Dossier table _ghost_frac() implements the ghost half of: 80%
+        at level 1, 90% at levels 2-4, 100% at levels 5-20, back down to
+        90% at level 21+. PAC_TILES_PER_SEC used to be a hard constant
+        (the level-1 value, 80%) forever, while _ghost_frac() was
+        correctly made level-scaled -- so from level 7 on, every ghost in
+        every corridor was permanently FASTER than Pac-Man, the opposite
+        of the arcade (e.g. real L10: Pac 100% vs ghosts 85%, Pac clearly
+        faster; here Pac was stuck at 80% forever)."""
+        lvl = self.level
+        if lvl <= 1:
+            return 0.80
+        if lvl <= 4:
+            return 0.90
+        if lvl <= 20:
+            return 1.00
+        return 0.90
+
     def _pac_speed(self):
-        return self.PAC_TILES_PER_SEC * (self.get_timeout() / 1000.0)
+        return self.GHOST_ARCADE_MAX_TPS * self._pac_frac() * (self.get_timeout() / 1000.0)
+
+    def _pac_effective_speed(self):
+        """Pac's speed for THIS tick, applying the dot-eating slowdown
+        while he is transiting toward a tile that still has a dot in it
+        (see DOT_SPEED_FRAC). self.pac_y/x/dir at this point are the
+        tile-center and committed direction from the END of the previous
+        tick, i.e. exactly the leg this tick's movement continues or
+        starts."""
+        speed = self._pac_speed()
+        dy, dx = self.pac_dir
+        if (dy, dx) != (0, 0):
+            ny, nx = self.pac_y + dy, self._wrap_x(self.pac_x + dx)
+            if 0 <= ny < self._maze_rows() and self.maze[ny][nx] in ('.', 'O'):
+                speed *= self.DOT_SPEED_FRAC
+        return speed
+
+    def _ghost_base_speed(self):
+        return self.GHOST_ARCADE_MAX_TPS * (self.get_timeout() / 1000.0)
 
     def _ghost_frac(self):
         return min(self.GHOST_MAX_FRAC,
                    self.GHOST_BASE_FRAC + self.GHOST_FRAC_STEP * (self.level - 1))
+
+    def _elroy_level(self):
+        """0 = not Elroy, 1/2 = Cruise Elroy tier (Dossier), based on how
+        many dots remain in the CURRENT level."""
+        total = getattr(self, '_level_total_dots', 0)
+        if total <= 0:
+            return 0
+        if self.dots_left <= total * self.ELROY2_DOTS_FRAC:
+            return 2
+        if self.dots_left <= total * self.ELROY1_DOTS_FRAC:
+            return 1
+        return 0
+
+    def _blinky_frac(self):
+        elroy = self._elroy_level()
+        bonus = {1: self.ELROY1_FRAC_BONUS, 2: self.ELROY2_FRAC_BONUS}.get(elroy, 0.0)
+        return min(self.GHOST_MAX_FRAC + self.ELROY2_FRAC_BONUS, self._ghost_frac() + bonus)
 
     def _fright_ticks(self):
         seconds = max(1, min(6, 7 - self.level))
@@ -452,9 +536,14 @@ class PacManGame(Game):
         return by + 2 * (py - by), bx + 2 * (px - bx)
 
     def _ghost_target(self, ghost, blinky):
+        name = ghost['name']
+        # Cruise Elroy 2 (Dossier): once dots run low, Blinky chases
+        # Pac-Man directly even through a scatter phase instead of
+        # retreating to his corner like every other ghost.
+        if name == 'Blinky' and self._elroy_level() >= 2:
+            return (self.pac_y, self.pac_x)
         if self.mode == 'scatter':
             return ghost['corner']
-        name = ghost['name']
         if name == 'Blinky':
             return (self.pac_y, self.pac_x)
         if name == 'Pinky':
@@ -507,24 +596,25 @@ class PacManGame(Game):
     def _move_one_ghost(self, ghost, blinky):
         in_house = self._in_house(ghost['y'], ghost['x'])
         on_enter = None
+        normal_frac = self._blinky_frac() if ghost['name'] == 'Blinky' else self._ghost_frac()
         if ghost['eaten']:
-            speed = self._pac_speed() * self.EATEN_FRAC
+            speed = self._ghost_base_speed() * self.EATEN_FRAC
             fn = self._decide_eaten
             on_enter = lambda ty, tx, g=ghost: self._revive_on_enter(ty, tx, g)
         elif not ghost['released']:
             return
         elif in_house:
-            speed = self._pac_speed() * self._ghost_frac()
+            speed = self._ghost_base_speed() * normal_frac
             fn = self._decide_house_exit
         elif self._is_edible(ghost):
-            speed = self._pac_speed() * self.FRIGHT_FRAC
+            speed = self._ghost_base_speed() * self.FRIGHT_FRAC
             fn = self._decide_frightened
         else:
-            speed = self._pac_speed() * self._ghost_frac()
+            speed = self._ghost_base_speed() * normal_frac
             fn = lambda ty, tx, d, g=ghost, b=blinky: self._decide_hunt(g, b, ty, tx, d)
 
         if not ghost['eaten'] and not in_house and self._in_tunnel(ghost['y'], ghost['x']):
-            speed = self._pac_speed() * self.TUNNEL_FRAC
+            speed = self._ghost_base_speed() * self.TUNNEL_FRAC
 
         ghost['y'], ghost['x'], ghost['progress'], ghost['dir'] = self._advance(
             ghost['y'], ghost['x'], ghost['progress'], ghost['dir'], fn, speed, on_enter)
@@ -619,6 +709,7 @@ class PacManGame(Game):
         self.level += 1
         self.maze = [list(row) for row in self._MAZE]
         self.dots_left = sum(1 for row in self.maze for c in row if c in ('.', 'O'))
+        self._level_total_dots = self.dots_left  # for Cruise Elroy thresholds
         self.dots_eaten_level = 0
         self.fruit_active = False
         self.fruit_spawned_70 = False
@@ -648,7 +739,7 @@ class PacManGame(Game):
 
         self.pac_y, self.pac_x, self.pac_progress, self.pac_dir = self._advance(
             self.pac_y, self.pac_x, self.pac_progress, self.pac_dir,
-            self._pac_decide, self._pac_speed(), self._pac_on_enter)
+            self._pac_decide, self._pac_effective_speed(), self._pac_on_enter)
 
         # Collision must be resolved BEFORE the last-dot win check: eating
         # the last dot on the same tick a ghost lands on Pac-Man used to
@@ -692,14 +783,38 @@ class PacManGame(Game):
 
     # ── rendering ────────────────────────────────────────────────────────
 
+    def _header_text(self):
+        """Priority-ordered header candidates, most informative first, so a
+        long play session degrades instead of silently clipping the lives
+        counter off the right edge. self.level and self.score are BOTH
+        uncapped (level increments forever on every clear; score has no
+        ceiling), so no fixed min_w can guarantee the full header always
+        fits -- at level 99 with a 7-digit score (fully reachable after an
+        extended session) the full header already exceeds 50 columns, the
+        exact same failure this class's min_w comment describes at the old
+        min_w=30. Lives sits right after the level, ahead of score/high
+        score, so it is the LAST field ever dropped: a player must always
+        be able to see how many lives remain, but losing the numeric score
+        or high score display is a minor, recoverable loss by comparison."""
+        lv, sc, hi, lives = self.level, self.score, self._high, 'c' * self.lives
+        candidates = (
+            f' PAC-MAN Lv:{lv} Lives:{lives} Score:{sc} Hi:{hi} ',
+            f' PAC-MAN Lv:{lv} Lives:{lives} Score:{sc} ',
+            f' Lv:{lv} Lives:{lives} Score:{sc} ',
+            f' Lv:{lv} Lives:{lives} ',
+        )
+        for c in candidates:
+            if len(c) <= self.w:
+                return c
+        return candidates[-1]  # extreme floor; safe_addstr clips as a last resort
+
     def draw(self):
         maze_rows = self._maze_rows()
         maze_cols = self._maze_cols()
         off_y = max(1, (self.h - maze_rows - 3) // 2)
         off_x = max(0, (self.w - maze_cols) // 2)
 
-        header = (f' PAC-MAN  Lvl:{self.level}  Score:{self.score}  '
-                 f'Hi:{self._high}  Lives:{"c" * self.lives} ')
+        header = self._header_text()
         self.safe_addstr(off_y - 1, max(0, (self.w - len(header)) // 2),
                          header, curses.A_BOLD | curses.color_pair(3))
 

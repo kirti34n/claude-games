@@ -15,7 +15,13 @@ from .. import config
 class MinesweeperGame(Game):
     name = "minesweeper_i"
     min_h = 22
-    min_w = 40
+    # 40 (the old floor) is one status-bar segment too narrow: at that
+    # width render.status_bar's greedy fit (see its docstring) can show the
+    # two escape hatches plus only two of {WASD:Move, Space:Reveal,
+    # F:Flag}, so F:Flag -- with no way to flag a mine -- silently vanished
+    # on the easy board (9 cols, whose min_w floors out at 40). 48 is the
+    # smallest floor that fits all five segments with room to spare.
+    min_w = 48
     supports_difficulty = True
     # self.score is a revealed-cell count, which saturates across
     # difficulties instead of comparing like with like (a 381-cell Hard win
@@ -70,8 +76,8 @@ class MinesweeperGame(Game):
 
     def _fit_bounds(self):
         # The hard board is 30 cols = 60 render columns, far wider than the
-        # class min_w=40, so gate on the real board size to avoid clipping.
-        self.min_w = max(40, self.cols * 2 + 4)
+        # class min_w, so gate on the real board size to avoid clipping.
+        self.min_w = max(self.__class__.min_w, self.cols * 2 + 4)
         self.min_h = max(22, self.rows + 6)
 
     def on_resize(self):

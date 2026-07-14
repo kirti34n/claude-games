@@ -10,7 +10,12 @@ from ..game import Game
 class FroggerGame(Game):
     name = "frogger"
     min_h = 20
-    min_w = 44
+    # Wide enough for the header at its own worst case (6-digit score, 4
+    # lives on easy): 44 was narrower than the header could reach after
+    # completing just level 1 (score 1110+ truncates Time, the exact stat
+    # the whole game is built around), and it kept shrinking as the score
+    # grew from there.
+    min_w = 48
     supports_difficulty = True
 
     FIELD_W = 40
@@ -74,6 +79,24 @@ class FroggerGame(Game):
             self._queued_dir = None
             self._anim_tick = 0
             self._death_freeze = saved.get('death_freeze', 0)
+            # Not part of the save schema on purpose (see _lock_ride).
+            self._ride = None
+            row_typ = self._LANES[self.frog_row][0]
+            if row_typ in ('river', 'turtle'):
+                # Lock onto the platform RIGHT NOW, against the lanes
+                # exactly as saved, before update() ever runs again and
+                # advances them. Locking lazily inside update() instead
+                # would compare this stale, already-one-tick-old frog_x
+                # against entities that had *already* taken their first
+                # post-resume step -- the same one-tick skew that made
+                # riding unsafe before frogger-11 was fixed, just
+                # relocated to the load boundary instead of every tick.
+                # If this fails (corrupt/incompatible save), leave _ride
+                # None; the first update() dies on it exactly as an
+                # invalid saved position always has.
+                width = self._ent_width(row_typ)
+                submerged = row_typ == 'turtle' and self._turtle_submerged()
+                self._lock_ride(self.frog_row, width, submerged)
             return
         self._new_game()
 
@@ -121,6 +144,8 @@ class FroggerGame(Game):
         self.hop_cooldown = 0
         self._queued_dir = None
         self.time_left = self._DIFF_TIME[self.difficulty]
+        # No platform is locked onto right after a (re)spawn; see _lock_ride.
+        self._ride = None
 
     def get_timeout(self):
         return self.TICK_MS
@@ -132,9 +157,82 @@ class FroggerGame(Game):
             return 3
         return 0
 
+    def _q(self, v):
+        """The one shared quantizer for turning a continuous position into a
+        grid column -- used for entities here AND for the frog's column
+        everywhere in this file (int(round(...))). Entities used to be
+        quantized with int()/floor while the frog was quantized with
+        round(): while riding, frog_x - entity stayed EXACTLY constant, but
+        floor() steps down only at the .0 boundary while round() steps up
+        at .5, so the two DISAGREED on which relative cell the frog was
+        over purely from the mismatch, not from any real drift -- reading a
+        frog on the log's edge cell as having slipped into the water. Both
+        sides must use the same function or the "constant offset" invariant
+        that makes riding safe stops holding once the position is
+        fractional.
+        """
+        return int(round(v)) % self.FIELD_W
+
     def _covers(self, ent, width, col):
-        s = int(ent) % self.FIELD_W
+        s = self._q(ent)
         return any((s + k) % self.FIELD_W == col for k in range(width))
+
+    def _find_platform(self, row, col, width):
+        """Return (entity_index, cell_offset) if `col` sits on one of this
+        row's entities right now, else None. `cell_offset` is `col`'s
+        position within that entity's span (0..width-1) -- the exact `k`
+        draw() uses to place that entity's cells, so a caller that pins to
+        (entity_index, cell_offset) can never disagree with what gets
+        drawn. Entities are spaced at least width+2 apart (_spawn_lanes),
+        so at most one can ever match."""
+        fw = self.FIELD_W
+        for i, e in enumerate(self.lanes[row]['ents']):
+            off = (col - self._q(e)) % fw
+            if off < width:
+                return i, off
+        return None
+
+    def _lock_ride(self, row, width, submerged):
+        """(Re)attach the frog to whichever platform entity is under it
+        right now, storing (row, entity_index, cell_offset) in self._ride
+        and pinning frog_x to entity_value + cell_offset (cell_offset is an
+        int).
+
+        This is the fix for frogger-11: rounding commutes with adding an
+        integer -- round(x + n) == round(x) + n for any integer n, always,
+        no boundary cases -- so once frog_x is exactly
+        `entity_value + cell_offset`, round(frog_x) equals
+        round(entity_value) + cell_offset on every future tick with zero
+        drift, by that identity alone.
+
+        The old code instead left frog_x as the bare rounded landing
+        column and separately re-accumulated d*cells onto it every tick
+        afterward -- a SECOND float meant to stay in lockstep with the
+        entity's own float. It started already one tick "behind" (entities
+        advance before a hop is resolved, so the entity had already taken
+        this tick's step while the newly-landed frog_x had not), and two
+        independently-advancing, independently-rounded floats with a
+        non-integer difference between them do not round in lockstep: at
+        a platform's edge cells specifically (where the frog's rounded
+        column is only a fraction of a cell from falling to the next
+        integer either way), that lag was enough to flip which side of a
+        rounding boundary the frog and its own platform landed on, a few
+        ticks apart, and _covers() -- driven by two separately-rounded
+        values -- read that as the frog having slipped off, or stayed
+        safely on, a platform whose drawn cells said otherwise (frogger-11
+        death-on-every-log/turtle, frogger-12 the mirror false-safe).
+
+        Returns True if locked; False if there is no platform under the
+        current column right now (caller must _die())."""
+        col = int(round(self.frog_x)) % self.FIELD_W
+        match = None if submerged else self._find_platform(row, col, width)
+        if match is None:
+            return False
+        idx, off = match
+        self._ride = (row, idx, off)
+        self._ride_edge_x = float(col)
+        self.frog_x = (self.lanes[row]['ents'][idx] + off) % self.FIELD_W
+        return True
 
     def _lane_speed(self, row):
         _typ, d, base = self._LANES[row]
@@ -230,16 +328,6 @@ class FroggerGame(Game):
         if self.hop_cooldown > 0:
             self.hop_cooldown -= 1
 
-        row_before = self.frog_row
-        pre_typ = self._LANES[row_before][0]
-        pre_col = int(round(self.frog_x))
-        was_on_platform = False
-        if pre_typ in ('river', 'turtle'):
-            width = self._ent_width(pre_typ)
-            submerged = pre_typ == 'turtle' and self._turtle_submerged()
-            was_on_platform = (not submerged) and any(
-                self._covers(e, width, pre_col) for e in self.lanes[row_before]['ents'])
-
         # Advance all traffic, once, every tick.
         for i, (t, _d, _bs) in enumerate(self._LANES):
             if t in ('road', 'river', 'turtle'):
@@ -265,26 +353,51 @@ class FroggerGame(Game):
 
         if typ in ('river', 'turtle'):
             width = self._ent_width(typ)
-            col = int(round(self.frog_x))
+            submerged = typ == 'turtle' and self._turtle_submerged()
             if hopped:
-                # Just landed here this tick: judge against what is here now.
-                submerged = typ == 'turtle' and self._turtle_submerged()
-                on_platform = (not submerged) and any(
-                    self._covers(e, width, col) for e in self.lanes[row]['ents'])
-            else:
-                # Stationary: judge against the pre-move snapshot (matches
-                # what was actually drawn under the frog last frame), then
-                # ride the platform in lockstep so the frog never slips off
-                # its back edge.
-                on_platform = was_on_platform
-            if not on_platform:
+                # Just landed here this tick: lock onto whatever is under
+                # the frog right now (see _lock_ride for why this is what
+                # eliminates the drift, not just the landing-tick check).
+                if not self._lock_ride(row, width, submerged):
+                    self._die()
+                return
+            ride = self._ride
+            if ride is None or ride[0] != row:
+                # Defensive only: every real path that can put the frog on
+                # a river/turtle row locks a ride for it already (a hop,
+                # just above, or setup() immediately on loading a save
+                # mid-ride, before this tick's traffic advance runs) --
+                # this re-lock exists purely so an unreachable/corrupt
+                # state fails the same way an invalid position always has
+                # (a single wasted life), never a silent misread. Note
+                # this DOES carry the same one-tick skew a hop landing
+                # avoids (frog_x here can be stale relative to the
+                # traffic advance a few lines above), which is exactly
+                # why setup() does not rely on this path for the load
+                # case.
+                if not self._lock_ride(row, width, submerged):
+                    self._die()
+                return
+            _row, idx, off = ride
+            # Track the frog's OWN unwrapped displacement since it locked
+            # on, separately from the entity's own (wrapped-every-tick)
+            # position, so "carried past the edge of the visible field"
+            # keeps meaning what it always meant here: this specific
+            # physical log/turtle -- not whatever entity happens to be
+            # re-using that render slot after a wrap -- carried the frog
+            # off-screen. The DRAWN/collision position below is derived
+            # fresh from the entity every tick and never touches this.
+            d, cells = self._lane_speed(row)
+            self._ride_edge_x += d * cells
+            if self._ride_edge_x < 0 or self._ride_edge_x > self.FIELD_W - 1:
+                self._die()   # carried off-screen by the log/turtle
+                return
+            if submerged:
                 self._die()
                 return
-            if not hopped:
-                d, cells = self._lane_speed(row)
-                self.frog_x += d * cells
-                if self.frog_x < 0 or self.frog_x > self.FIELD_W - 1:
-                    self._die()   # carried off-screen by the log/turtle
+            # Re-pin every tick: the entity is the single source of truth,
+            # so this can never drift from what draw() renders for it.
+            self.frog_x = (self.lanes[row]['ents'][idx] + off) % self.FIELD_W
             return
 
         if typ == 'road':
@@ -299,8 +412,11 @@ class FroggerGame(Game):
         n = len(self._LANES)
         sx = max(0, (self.w - fw) // 2)
         sy = max(1, (self.h - n - 3) // 2)
-        header = (f' FROGGER  Lv{self.level}  Score:{self.score} '
-                  f' Lives:{"@" * self.lives}  Time:{max(0, int(self.time_left)):02d} ')
+        # Compact, single-spaced form: comfortably fits min_w even at a
+        # 6-digit score (the old double-spaced form exceeded its own
+        # declared min_w=44 the moment a player finished level 1).
+        header = (f' FROGGER Lv{self.level} Score:{self.score} '
+                  f'Lives:{"@" * self.lives} Time:{max(0, int(self.time_left)):02d} ')
         self.safe_addstr(max(0, sy - 2), max(0, (self.w - len(header)) // 2),
                          header, curses.A_BOLD)
         self.draw_box(sy - 1, max(0, sx - 1), n + 2, fw + 2, curses.color_pair(7))
@@ -320,7 +436,7 @@ class FroggerGame(Game):
                 self.safe_addstr(y, sx, '~' * fw, curses.color_pair(6))
                 for e in self.lanes[i]['ents']:
                     for k in range(self._ent_width('river')):
-                        cx = (int(e) + k) % fw
+                        cx = (self._q(e) + k) % fw
                         self.safe_addstr(y, sx + cx, '#',
                                          curses.color_pair(3) | curses.A_BOLD)
             elif typ == 'turtle':
@@ -330,17 +446,26 @@ class FroggerGame(Game):
                 attr = curses.color_pair(6) if submerged else (curses.color_pair(5) | curses.A_BOLD)
                 for e in self.lanes[i]['ents']:
                     for k in range(self._ent_width('turtle')):
-                        cx = (int(e) + k) % fw
+                        cx = (self._q(e) + k) % fw
                         self.safe_addstr(y, sx + cx, ch, attr)
             else:  # road
                 for e in self.lanes[i]['ents']:
                     for k in range(self._ent_width('road')):
-                        cx = (int(e) + k) % fw
+                        cx = (self._q(e) + k) % fw
                         ch = '[' if k == 0 else (']' if k == 2 else 'o')
                         self.safe_addstr(y, sx + cx, ch,
                                          curses.color_pair(2) | curses.A_BOLD)
         fy = sy + self.frog_row
-        fx = sx + int(round(self.frog_x))
+        # Must go through the shared quantizer _q() (which wraps % FIELD_W),
+        # not a bare int(round(...)): while riding, frog_x = (entity +
+        # offset) % FIELD_W can sit in [FIELD_W - 0.5, FIELD_W), and
+        # int(round()) on that yields FIELD_W -- one column past the last
+        # legal field column -- painting '@' over the play-area's right
+        # border while collision (which does use _q()) still reads the frog
+        # at column 0. That drew the frog safe while it wasn't drawn on any
+        # platform at all, and corrupted the border (frogger draw-vs-
+        # collision disagreement).
+        fx = sx + self._q(self.frog_x)
         self.safe_addstr(fy, fx, '@',
                          curses.color_pair(1) | curses.A_BOLD | curses.A_REVERSE)
         self.draw_status_bar('WASD:Hop ?:Help Esc:Quit')

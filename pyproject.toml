@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "arcade-games"
 dynamic = ["version"]
-description = "A terminal arcade collection: 14 games to play while you wait"
+description = "A terminal arcade collection: 18 games to play while you wait, including Wordplay and a virtual-chip casino"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
@@ -15,7 +15,7 @@ authors = [
 dependencies = [
     "windows-curses; platform_system == 'Windows'",
 ]
-keywords = ["games", "arcade", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi", "frogger", "multiplayer"]
+keywords = ["games", "arcade", "terminal", "cli", "snake", "tetris", "2048", "curses", "shooter", "pong", "flappy", "minesweeper", "pacman", "connect4", "sokoban", "reversi", "frogger", "multiplayer", "wordplay", "blackjack", "roulette", "slots", "casino"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console :: Curses",

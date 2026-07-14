@@ -1,5 +1,6 @@
 """Reversi / Othello."""
 import random
+import time
 
 try:
     import curses
@@ -36,6 +37,9 @@ class ReversiGame(Game):
         # resolving turns (help open, a resize) is parked here by
         # net_pump() instead of being lost, and drained by update().
         self._net_inbox = None
+        # Non-blocking hold for a pass message over the net path; see
+        # update()'s use of it and the comment on the pass branches below.
+        self._wait_until = 0.0
         saved = self._load_save(self.name) if not self.net else None
         if saved:
             self.board = saved['board']
@@ -53,7 +57,12 @@ class ReversiGame(Game):
         self.cur_r = self.cur_c = m
         self.turn = 1
         self.score = 2
-        self.message = ''
+        # The run loop's very first frame draws before update() ever runs
+        # (a turn-based game only steps update() on an actual keypress), so
+        # without this the opening frame showed a blank prompt line instead
+        # of telling the player it's their move.
+        self.message = 'Your move' if self.turn == self.local_player \
+            else "Opponent's turn..."
 
     def get_timeout(self):
         return 120 if self.net else -1  # net games poll; local games block
@@ -103,9 +112,14 @@ class ReversiGame(Game):
             self.draw()
 
     def _pause(self, ms):
-        """Hold the current frame on screen for ms (AI think pause, a
-        visible pass message). ESC fast-forwards past it; it never blocks
-        a net peer (animate() no-ops when self.net is set)."""
+        """Hold the current frame on screen for ms (AI think pause). ESC
+        fast-forwards past it. Only meaningful for the SOLO path: animate()
+        no-ops (zero delay) whenever self.net is set, so this dwell is
+        invisible over the net path by design (a local animation must
+        never block the socket a peer's reliable delivery depends on).
+        A net game that needs a message to actually stay on screen for a
+        while (the pass banners) uses the non-blocking self._wait_until
+        deadline in update() instead -- see the pass branches there."""
         for _ in self.animate((ms,)):
             self.stdscr.erase()
             self.draw()
@@ -263,6 +277,17 @@ class ReversiGame(Game):
             self.game_over = True
             self.message = 'Opponent disconnected'
             return
+        # Finish holding a pass message visible (net path only -- see the
+        # pass branches below for why this can't just be a blocking
+        # animate()-based _pause() there). self.turn never changes while
+        # a wait is pending, so "flip to the other player" is still
+        # exactly 3 - self.turn once the deadline arrives, same as the
+        # solo path computes inline.
+        if self.net and self._wait_until:
+            if time.monotonic() < self._wait_until:
+                return
+            self._wait_until = 0.0
+            self.turn = 3 - self.turn
         # Resolve turns/passes until it is the local player's move (with a legal
         # option) or the game ends. The opponent's move comes from the AI (solo)
         # or the network (multiplayer); passes are deterministic from the board.
@@ -281,13 +306,32 @@ class ReversiGame(Game):
                     self.message = 'Your move'
                     return
                 self.message = 'No move - you pass'
-                self._pause(700)  # visible: previously overwritten before it drew
+                # animate()-based _pause() is a deliberate no-op (zero
+                # delay) whenever self.net is set, so a peer is never
+                # blocked waiting on a local animation -- but that made
+                # THIS dwell disappear too: the message was set and then
+                # overwritten by a LATER iteration of this same
+                # resolution loop before a single frame with it ever
+                # drew (0ms of real screen time, out of an intended
+                # 700ms). Net games instead arm a non-blocking deadline
+                # and return immediately; update() re-checks it (above)
+                # on every subsequent call until it elapses, so the run
+                # loop keeps redrawing the SAME message for the full
+                # 700ms while net_pump() (called unconditionally each
+                # iteration) keeps servicing the socket.
+                if self.net:
+                    self._wait_until = time.monotonic() + 0.7
+                    return
+                self._pause(700)  # solo: blocking dwell is fine (turn-based)
                 self.turn = 3 - cur
                 continue
             # opponent's turn
             if not curv:
                 self.message = 'Opponent passes' if self.net else 'AI passes'
-                self._pause(700)  # previously silent: the human got two turns
+                if self.net:
+                    self._wait_until = time.monotonic() + 0.7
+                    return
+                self._pause(700)  # solo: blocking dwell is fine (turn-based)
                 self.turn = 3 - cur
                 continue
             if self.net:
